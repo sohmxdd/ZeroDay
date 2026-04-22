@@ -34,6 +34,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from ErrorMitigation.phase3 import Phase3Engine
 
 # ---------------------------------------------------------------------------
 # Phase 0: Data Loading
@@ -249,6 +250,47 @@ def export_artifacts(result: dict, output_dir: str):
 
     return out
 
+# ---------------------------------------------------------------------------
+# Main Phase 3: Results Comparison & Verdict Generation
+# ---------------------------------------------------------------------------
+
+def run_phase3(output_dir: str):
+    print(f"\n[PHASE 4] Running comparison engine...")
+
+    BASE_DIR = Path(__file__).parent
+
+    # 🔹 NEW PATH (your change)
+    phase1_path = BASE_DIR / "ErrorMitigation" / "ageis_output.json"
+
+    # 🔹 existing paths
+    out = Path(output_dir)
+    bias_path = out / "bias_report.json"
+    mitigation_path = out / "mitigation_report.json"
+
+    # Safety check
+    for path in [phase1_path, bias_path, mitigation_path]:
+        if not path.exists():
+            print(f"  [ERROR] Missing file: {path}")
+            return
+
+    try:
+        engine = Phase3Engine(
+            str(phase1_path),
+            str(bias_path),
+            str(mitigation_path)
+        )
+
+        result = engine.run()
+
+        output_path = out / "phase3_report.json"
+        with open(output_path, "w") as f:
+            json.dump(result, f, indent=2)
+
+        print(f"  [SAVED] Phase 3 report -> {output_path}")
+        engine.plot_spd()
+        engine.plot_di()
+    except Exception as e:
+        print(f"  [ERROR] Phase 3 failed: {e}")
 
 # ---------------------------------------------------------------------------
 # Main Pipeline
@@ -339,6 +381,9 @@ def run_pipeline(
     # --- Phase 3: Export Artifacts ---
     print(f"\n[PHASE 3] Exporting artifacts...")
     artifact_dir = export_artifacts(result, output_dir)
+    
+    # --- Phase 4: Comparison Engine ---
+    run_phase3(output_dir)
 
     # --- Summary ---
     elapsed = time.time() - start_time
