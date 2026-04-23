@@ -1,0 +1,78 @@
+{
+  "distribution_bias": {
+    "gender": {
+      "group_proportions": {
+        "male": 0.6505,
+        "female": 0.3495
+      },
+      "imbalance_ratio": 1.8612
+    },
+    "race": {
+      "group_proportions": {
+        "group_A": 0.6015,
+        "group_B": 0.2565,
+        "group_C": 0.142
+      },
+      "imbalance_ratio": 4.2359
+    }
+  },
+  "outcome_bias": {
+    "gender": {
+      "outcome_rates": {
+        "female": 0.5823,
+        "male": 0.7433
+      },
+      "disparity": 0.161
+    },
+    "race": {
+      "outcome_rates": {
+        "group_A": 0.7373,
+        "group_B": 0.6004,
+        "group_C": 0.6303
+      },
+      "disparity": 0.1369
+    }
+  },
+  "fairness_metrics": {
+    "gender": {
+      "demographic_parity_difference": 0.161,
+      "disparate_impact_ratio": 0.7834
+    },
+    "race": {
+      "demographic_parity_difference": 0.1369,
+      "disparate_impact_ratio": 0.8143
+    }
+  },
+  "advanced_bias": {
+    "proxy_bias": {
+      "zip_code": {
+        "correlation": 0.7062,
+        "correlated_with": "race"
+      }
+    },
+    "intersectional_bias": {
+      "features": [
+        "gender",
+        "race"
+      ],
+      "max_disparity": 0.3227,
+      "group_rates": {
+        "female_group_A": 0.628,
+        "female_group_B": 0.533,
+        "female_group_C": 0.4737,
+        "male_group_A": 0.7964,
+        "male_group_B": 0.6375,
+        "male_group_C": 0.709
+      }
+    },
+    "label_bias": {}
+  },
+  "insights": [
+    "Representation imbalance in 'gender': ratio = 1.86",
+    "Outcome disparity in 'gender': gap = 16.10%",
+    "Representation imbalance in 'race': ratio = 4.24",
+    "Outcome disparity in 'race': gap = 13.69%",
+    "Proxy bias: 'zip_code' correlates with 'race' (r=0.706)",
+    "Intersectional bias detected across gender x race"
+  ]
+}
