@@ -30,10 +30,14 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from unittest import result
+from xml.parsers.expat import model
 
 import numpy as np
 import pandas as pd
-
+from pathlib import Path
+from ErrorMitigation.phase3 import Phase3Engine
+from ErrorMitigation.finalphase import Phase5Engine
 
 # ---------------------------------------------------------------------------
 # Phase 0: Data Loading
@@ -249,6 +253,48 @@ def export_artifacts(result: dict, output_dir: str):
 
     return out
 
+# ---------------------------------------------------------------------------
+# Main Phase 3: Results Comparison & Verdict Generation
+# ---------------------------------------------------------------------------
+
+def run_phase3(output_dir: str):
+    print(f"\n[PHASE 4] Running comparison engine...")
+
+    BASE_DIR = Path(__file__).parent
+
+    # 🔹 NEW PATH (your change)
+    phase1_path = BASE_DIR / "ErrorMitigation" / "ageis_output.json"
+
+    # 🔹 existing paths
+    out = Path(output_dir)
+    bias_path = out / "bias_report.json"
+    mitigation_path = out / "mitigation_report.json"
+
+    # Safety check
+    for path in [phase1_path, bias_path, mitigation_path]:
+        if not path.exists():
+            print(f"  [ERROR] Missing file: {path}")
+            return
+
+    try:
+        engine = Phase3Engine(
+            str(phase1_path),
+            str(bias_path),
+            str(mitigation_path)
+        )
+
+        result = engine.run()
+
+        output_path = out / "phase3_report.json"
+        with open(output_path, "w") as f:
+            json.dump(result, f, indent=2)
+
+        print(f"  [SAVED] Phase 3 report -> {output_path}")
+        engine.plot_spd()
+        engine.plot_di()
+    except Exception as e:
+        print(f"  [ERROR] Phase 3 failed: {e}")
+
 
 # ---------------------------------------------------------------------------
 # Main Pipeline
@@ -339,7 +385,40 @@ def run_pipeline(
     # --- Phase 3: Export Artifacts ---
     print(f"\n[PHASE 3] Exporting artifacts...")
     artifact_dir = export_artifacts(result, output_dir)
+    
+    # --- Phase 4: Comparison Engine ---
+    run_phase3(output_dir)
+    
+    # --- Phase 5: Final Verdict & LLM Explanation ---
+    print("\n[PHASE 5] Explainability + Governance...")
 
+    try:
+        data_path = Path(output_dir) / "debiased_dataset.csv"
+
+        if not data_path.exists():
+            print("  [ERROR] Phase 5 failed: debiased dataset not found")
+
+        else:
+            df = pd.read_csv(data_path)
+
+            if df.empty:
+                print("  [ERROR] Phase 5 failed: dataset is empty")
+
+            else:
+                sensitive_features = [s for s in sensitive_features if s in df.columns]
+
+                phase5 = Phase5Engine(
+                    X=df,
+                    feature_names=list(df.columns),
+                    sensitive_features=sensitive_features,
+                    output_dir=output_dir,
+                    gemini_enabled=bool(gemini_enabled)
+                )
+
+                phase5_result = phase5.run()
+
+    except Exception as e:
+        print(f"  [ERROR] Phase 5 failed: {e}")
     # --- Summary ---
     elapsed = time.time() - start_time
 
@@ -347,14 +426,14 @@ def run_pipeline(
     print("  PIPELINE COMPLETE")
     print("=" * 70)
     print(f"""
-  Bias Types Detected:  {', '.join(result['dataset_output']['bias_types_detected'])}
-  Best Strategy:        {result['ranking']['best_strategy']}
-  Tradeoff Score:       {result['ranking']['best_score']:.4f}
-  Accuracy Change:      {result['model_output']['accuracy_drop']:+.4f}
-  Fairness Improvement: {result['dataset_output']['fairness_improvement']:.4f}
-  Gemini Used:          {result['llm_summary']['gemini_used']}
-  Output Directory:     {artifact_dir.resolve()}
-  Time Elapsed:         {elapsed:.1f}s
+    Bias Types Detected:  {', '.join(result['dataset_output']['bias_types_detected'])}
+    Best Strategy:        {result['ranking']['best_strategy']}
+    Tradeoff Score:       {result['ranking']['best_score']:.4f}
+    Accuracy Change:      {result['model_output']['accuracy_drop']:+.4f}
+    Fairness Improvement: {result['dataset_output']['fairness_improvement']:.4f}
+    Gemini Used:          {result['llm_summary']['gemini_used']}
+    Output Directory:     {artifact_dir.resolve()}
+    Time Elapsed:         {elapsed:.1f}s
 """)
 
     # Print ranking table
