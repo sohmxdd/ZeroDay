@@ -19,8 +19,6 @@ Usage:
     # Configure fairness/accuracy tradeoff:
     python run_pipeline.py --alpha 0.7 --beta 0.3
 
-    # Disable Gemini LLM:
-    python run_pipeline.py --no-gemini
 """
 
 import argparse
