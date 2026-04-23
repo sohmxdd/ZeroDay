@@ -30,11 +30,14 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from unittest import result
+from xml.parsers.expat import model
 
 import numpy as np
 import pandas as pd
-
+from pathlib import Path
 from ErrorMitigation.phase3 import Phase3Engine
+from ErrorMitigation.finalphase import Phase5Engine
 
 # ---------------------------------------------------------------------------
 # Phase 0: Data Loading
@@ -292,6 +295,7 @@ def run_phase3(output_dir: str):
     except Exception as e:
         print(f"  [ERROR] Phase 3 failed: {e}")
 
+
 # ---------------------------------------------------------------------------
 # Main Pipeline
 # ---------------------------------------------------------------------------
@@ -384,7 +388,37 @@ def run_pipeline(
     
     # --- Phase 4: Comparison Engine ---
     run_phase3(output_dir)
+    
+    # --- Phase 5: Final Verdict & LLM Explanation ---
+    print("\n[PHASE 5] Explainability + Governance...")
 
+    try:
+        data_path = Path(output_dir) / "debiased_dataset.csv"
+
+        if not data_path.exists():
+            print("  [ERROR] Phase 5 failed: debiased dataset not found")
+
+        else:
+            df = pd.read_csv(data_path)
+
+            if df.empty:
+                print("  [ERROR] Phase 5 failed: dataset is empty")
+
+            else:
+                sensitive_features = [s for s in sensitive_features if s in df.columns]
+
+                phase5 = Phase5Engine(
+                    X=df,
+                    feature_names=list(df.columns),
+                    sensitive_features=sensitive_features,
+                    output_dir=output_dir,
+                    gemini_enabled=bool(gemini_enabled)
+                )
+
+                phase5_result = phase5.run()
+
+    except Exception as e:
+        print(f"  [ERROR] Phase 5 failed: {e}")
     # --- Summary ---
     elapsed = time.time() - start_time
 
@@ -392,14 +426,14 @@ def run_pipeline(
     print("  PIPELINE COMPLETE")
     print("=" * 70)
     print(f"""
-  Bias Types Detected:  {', '.join(result['dataset_output']['bias_types_detected'])}
-  Best Strategy:        {result['ranking']['best_strategy']}
-  Tradeoff Score:       {result['ranking']['best_score']:.4f}
-  Accuracy Change:      {result['model_output']['accuracy_drop']:+.4f}
-  Fairness Improvement: {result['dataset_output']['fairness_improvement']:.4f}
-  Gemini Used:          {result['llm_summary']['gemini_used']}
-  Output Directory:     {artifact_dir.resolve()}
-  Time Elapsed:         {elapsed:.1f}s
+    Bias Types Detected:  {', '.join(result['dataset_output']['bias_types_detected'])}
+    Best Strategy:        {result['ranking']['best_strategy']}
+    Tradeoff Score:       {result['ranking']['best_score']:.4f}
+    Accuracy Change:      {result['model_output']['accuracy_drop']:+.4f}
+    Fairness Improvement: {result['dataset_output']['fairness_improvement']:.4f}
+    Gemini Used:          {result['llm_summary']['gemini_used']}
+    Output Directory:     {artifact_dir.resolve()}
+    Time Elapsed:         {elapsed:.1f}s
 """)
 
     # Print ranking table
