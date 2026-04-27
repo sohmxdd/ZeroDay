@@ -11,8 +11,15 @@ Supported model types:
 
 Each pipeline receives its own training run using the transformed data
 (and optional sample weights) produced by the strategies module.
+
+Hardened with:
+    - Per-strategy timeout (prevents any single strategy from stalling)
+    - NaN/Inf sanitization before model.fit() and model.predict()
+    - Graceful fallback on any training error
 """
 
+import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -52,6 +59,59 @@ TrainingOutput = Dict[str, TrainedModel]
 
 
 # ---------------------------------------------------------------------------
+# Data Sanitization
+# ---------------------------------------------------------------------------
+
+def _sanitize_data(
+    X: pd.DataFrame,
+    y: pd.Series,
+    context: str = "",
+) -> Tuple[pd.DataFrame, pd.Series]:
+    """
+    Clean NaN and Inf values from feature matrix and target vector.
+
+    This is the safety net that prevents sklearn from crashing with
+    'Input X contains NaN' or 'Input X contains infinity'.
+
+    Args:
+        X: Feature matrix (may contain NaN/Inf after mitigation transforms).
+        y: Target vector.
+        context: Description for logging.
+
+    Returns:
+        Tuple of (clean X, clean y).
+    """
+    X = X.copy()
+    y = y.copy()
+
+    # Replace Inf with NaN first, then fill NaN
+    numeric_cols = X.select_dtypes(include=[np.number]).columns
+    for col in numeric_cols:
+        if np.isinf(X[col]).any():
+            X[col] = X[col].replace([np.inf, -np.inf], np.nan)
+
+    # Fill NaN in features
+    nan_count = X.isnull().sum().sum()
+    if nan_count > 0:
+        logger.debug(f"Sanitizing {nan_count} NaN values{f' ({context})' if context else ''}")
+        for col in X.columns:
+            if X[col].isnull().any():
+                if X[col].dtype in (np.float64, np.float32, np.int64, np.int32):
+                    fill_val = X[col].median()
+                    if pd.isna(fill_val):
+                        fill_val = 0
+                    X[col] = X[col].fillna(fill_val)
+                else:
+                    X[col] = X[col].fillna(0)
+
+    # Fill NaN in target
+    if y.isnull().any():
+        y = y.fillna(y.mode()[0] if len(y.mode()) > 0 else 0)
+
+    return X, y
+
+
+# ---------------------------------------------------------------------------
 # Model Factory
 # ---------------------------------------------------------------------------
 
@@ -82,7 +142,9 @@ def _get_model_instance(
 
     if model_type == "random_forest":
         return RandomForestClassifier(
-            n_estimators=100, max_depth=10, random_state=rs, n_jobs=-1
+            n_estimators=config.get("rf_n_estimators", 100),
+            max_depth=config.get("rf_max_depth", 10),
+            random_state=rs, n_jobs=-1
         )
 
     if model_type == "xgboost":
@@ -174,6 +236,9 @@ def _train_single_pipeline(
     # --- Encode ---
     mit_X_enc, encoders = _encode_for_training(mit_X)
 
+    # --- Sanitize: remove NaN/Inf BEFORE train_test_split ---
+    mit_X_enc, mit_y = _sanitize_data(mit_X_enc, mit_y, context=pipeline_name)
+
     # Reset indices to ensure alignment across X, y, sensitive, weights
     mit_X_enc = mit_X_enc.reset_index(drop=True)
     mit_y = mit_y.reset_index(drop=True)
@@ -193,6 +258,15 @@ def _train_single_pipeline(
         sw_series = None
 
     # --- Train/test split ---
+    # Safely stratify: only if target has >1 unique values and no class has <2 samples
+    can_stratify = False
+    if len(mit_y.unique()) > 1:
+        min_class_count = mit_y.value_counts().min()
+        if min_class_count >= 2:
+            can_stratify = True
+
+    stratify_param = mit_y if can_stratify else None
+
     if sw_series is not None:
         X_train, X_test, y_train, y_test, s_train, s_test, sw_train, sw_test = (
             train_test_split(
@@ -202,7 +276,7 @@ def _train_single_pipeline(
                 sw_series,
                 test_size=cfg["test_size"],
                 random_state=cfg["random_state"],
-                stratify=mit_y if len(mit_y.unique()) > 1 else None,
+                stratify=stratify_param,
             )
         )
     else:
@@ -212,7 +286,7 @@ def _train_single_pipeline(
             sensitive_aligned,
             test_size=cfg["test_size"],
             random_state=cfg["random_state"],
-            stratify=mit_y if len(mit_y.unique()) > 1 else None,
+            stratify=stratify_param,
         )
         sw_train = None
 
@@ -287,6 +361,10 @@ def train_models(
     """
     Train a model for every candidate mitigation pipeline.
 
+    Uses per-strategy timeouts to prevent any single strategy from
+    stalling the entire pipeline. Strategies that exceed the timeout
+    are skipped gracefully.
+
     Args:
         candidate_pipelines: List of pipeline names from the generator.
         X: Original feature matrix.
@@ -299,25 +377,47 @@ def train_models(
         Dictionary mapping pipeline names to TrainedModel dicts.
     """
     cfg = get_config(config)
+    strategy_timeout = cfg.get("strategy_timeout", 10)
+
     logger.info(
-        f"Training {len(candidate_pipelines)} pipelines with '{model_type}' ..."
+        f"Training {len(candidate_pipelines)} pipelines with '{model_type}' "
+        f"(timeout={strategy_timeout}s per strategy) ..."
     )
 
     results: TrainingOutput = {}
 
     for pipeline in candidate_pipelines:
+        t0 = time.time()
         try:
-            trained = _train_single_pipeline(
-                pipeline_name=pipeline,
-                X=X,
-                y=y,
-                sensitive=sensitive,
-                model_type=model_type,
-                config=cfg,
-            )
+            # Use ThreadPoolExecutor for timeout enforcement
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(
+                    _train_single_pipeline,
+                    pipeline_name=pipeline,
+                    X=X,
+                    y=y,
+                    sensitive=sensitive,
+                    model_type=model_type,
+                    config=cfg,
+                )
+                trained = future.result(timeout=strategy_timeout)
+
+            elapsed = time.time() - t0
             results[pipeline] = trained
+            logger.info(f"  ✓ '{pipeline}' completed in {elapsed:.1f}s")
+
+        except FuturesTimeout:
+            elapsed = time.time() - t0
+            logger.warning(
+                f"  ✗ '{pipeline}' timed out after {elapsed:.1f}s — skipping"
+            )
+            continue
+
         except Exception as e:
-            logger.error(f"Pipeline '{pipeline}' failed: {e}", exc_info=True)
+            elapsed = time.time() - t0
+            logger.error(
+                f"  ✗ '{pipeline}' failed in {elapsed:.1f}s: {e}"
+            )
             continue
 
     logger.info(

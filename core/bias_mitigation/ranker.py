@@ -92,7 +92,9 @@ def rank_results(
         accuracy = perf.get(performance_metric, 0.0)
         unfairness = fair.get(fairness_metric, 0.0)
 
-        score = alpha * accuracy - beta * unfairness
+        # Corrected formula: rewards high accuracy AND low unfairness
+        # score ∈ [0, alpha + beta] -- always positive
+        score = alpha * accuracy + beta * (1.0 - unfairness)
 
         row = {
             "pipeline": pipeline,

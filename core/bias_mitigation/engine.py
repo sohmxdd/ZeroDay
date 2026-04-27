@@ -188,10 +188,15 @@ class BiasMitigationEngine:
         # Step 3: Generate Candidate Pipelines
         # ---------------------------------------------------------------
         logger.info("Step 3/7: Generating candidate pipelines ...")
-        max_candidates = self.config.get("max_candidates", 10)
+        max_combos = self.config.get("max_combos", -1)
         candidate_pipelines = generate_candidates(
-            strategy_selection, max_candidates=max_candidates
+            strategy_selection, max_candidates=-1  # No cap -- run ALL strategies
         )
+        # In fast mode, limit expensive combined strategies
+        if max_combos >= 0:
+            singles = [p for p in candidate_pipelines if "+" not in p]
+            combos = [p for p in candidate_pipelines if "+" in p][:max_combos]
+            candidate_pipelines = singles + combos
         logger.info(f"  -> {len(candidate_pipelines)} pipelines generated")
 
         # ---------------------------------------------------------------
@@ -213,6 +218,11 @@ class BiasMitigationEngine:
         )
         logger.info(f"  -> {len(training_output)} models trained in {time.time()-t_train:.2f}s")
 
+        # --- Guard: handle total training failure ---
+        if len(training_output) == 0:
+            logger.error("All strategies failed! Returning no-bias fallback.")
+            return self._build_no_bias_result(data, X, y, S, sensitive_features)
+
         # ---------------------------------------------------------------
         # Step 5: Evaluate Models
         # ---------------------------------------------------------------
@@ -224,6 +234,11 @@ class BiasMitigationEngine:
             training_output, sensitive_feature_arrays
         )
         logger.info(f"  -> {len(evaluation_results)} models evaluated")
+
+        # --- Guard: handle total evaluation failure ---
+        if len(evaluation_results) == 0:
+            logger.error("All evaluations failed! Returning no-bias fallback.")
+            return self._build_no_bias_result(data, X, y, S, sensitive_features)
 
         # ---------------------------------------------------------------
         # Step 6: Rank Results
@@ -238,8 +253,14 @@ class BiasMitigationEngine:
         baseline_eval = evaluation_results.get("baseline", {})
         best_eval = evaluation_results.get(best_strategy, {})
         comparison = {}
-        if baseline_eval and best_eval:
-            comparison = compare_before_after(baseline_eval, best_eval)
+        if baseline_eval and best_eval and baseline_eval is not best_eval:
+            try:
+                comparison = compare_before_after(baseline_eval, best_eval)
+            except Exception as e:
+                logger.warning(f"Before/after comparison failed: {e}")
+        elif best_eval:
+            # No baseline succeeded, but best did -- compare best to itself
+            comparison = {}
 
         # ---------------------------------------------------------------
         # Step 7: LLM Explanation (deferred in fast mode)

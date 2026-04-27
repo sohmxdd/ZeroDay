@@ -55,10 +55,11 @@ logger = get_logger(__name__)
 # Performance Constants
 # ---------------------------------------------------------------------------
 
-FAST_MAX_SAMPLES = 5000         # Subsample cap in fast mode
-FAST_MAX_STRATEGIES = 3         # Max candidate pipelines in fast mode (incl. baseline)
-FAST_THRESHOLD_STEPS = 3        # [0.4, 0.5, 0.6] equivalent
-PIPELINE_TIMEOUT_SECONDS = 120  # Hard timeout failsafe
+FAST_MAX_SAMPLES = 2000         # Subsample cap in fast mode (enough for statistical validity)
+FAST_THRESHOLD_STEPS = 10       # Threshold search resolution
+PIPELINE_TIMEOUT_SECONDS = 30   # Hard timeout failsafe
+STRATEGY_TIMEOUT_SECONDS = 5    # Per-strategy timeout
+FAST_MAX_COMBOS = 2             # Max combined strategies in fast mode
 
 
 # ---------------------------------------------------------------------------
@@ -103,10 +104,16 @@ def run_pipeline(input_data: Dict[str, Any]) -> Dict[str, Any]:
     is_fast = speed == "fast"
     if is_fast:
         config["threshold_search_steps"] = FAST_THRESHOLD_STEPS
-        config["max_candidates"] = FAST_MAX_STRATEGIES
+        config["strategy_timeout"] = STRATEGY_TIMEOUT_SECONDS
+        config["max_combos"] = FAST_MAX_COMBOS
         config["speed"] = "fast"
+        # Fast model params
+        config["rf_n_estimators"] = 50
+        config["rf_max_depth"] = 6
     else:
         config["speed"] = "full"
+        config["strategy_timeout"] = 15  # More generous timeout in full mode
+        config["max_combos"] = -1  # Unlimited
 
     print("=" * 70)
     print("  AEGIS - AI Bias Governance Engine")
@@ -491,19 +498,44 @@ def _build_output(**kwargs) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def _auto_detect_target(df: pd.DataFrame) -> str:
-    """Auto-detect the likely target column."""
+    """Auto-detect the likely target column from common dataset conventions."""
+    # Priority 1: Exact match on common target column names
     common_targets = [
-        "target", "label", "class", "income", "approved",
-        "y", "outcome", "default", "result",
+        # Generic
+        "target", "label", "class", "y", "outcome", "result",
+        # Finance / lending
+        "approved", "default", "income", "loan_status", "credit_risk",
+        "default.payment.next.month", "default_payment",
+        # Recidivism
+        "is_recid", "two_year_recid", "recidivism", "is_recidivst",
+        # Survival / medical
+        "survived", "diagnosis", "readmitted",
+        # HR / churn
+        "attrition", "churn", "left", "turnover",
+        # Binary classification
+        "is_fraud", "fraud", "spam", "malignant",
     ]
-    for col in common_targets:
-        if col in df.columns:
+    # Case-insensitive match
+    col_lower_map = {col.lower().strip(): col for col in df.columns}
+    for target_name in common_targets:
+        if target_name in col_lower_map:
+            col = col_lower_map[target_name]
             logger.info(f"Auto-detected target column: '{col}'")
             return col
 
-    # Fallback: last column
+    # Priority 2: Find a binary column (exactly 2 unique values, 0/1 or similar)
+    for col in reversed(df.columns):
+        n_unique = df[col].nunique()
+        if n_unique == 2:
+            unique_vals = set(df[col].dropna().unique())
+            # Looks like a binary target
+            if unique_vals <= {0, 1} or unique_vals <= {"0", "1"} or unique_vals <= {"yes", "no"} or unique_vals <= {True, False}:
+                logger.info(f"Auto-detected binary target column: '{col}'")
+                return col
+
+    # Priority 3: Last column
     last_col = df.columns[-1]
-    logger.info(f"Using last column as target: '{last_col}'")
+    logger.info(f"Fallback: using last column as target: '{last_col}'")
     return last_col
 
 
@@ -512,47 +544,44 @@ def _auto_detect_sensitive(
     target: str,
     config: Dict[str, Any],
 ) -> List[str]:
-    """Auto-detect sensitive features using heuristics (fast) or Gemini."""
-    cat_cols = df.select_dtypes(include=["object", "category"]).columns.tolist()
-    cat_cols = [c for c in cat_cols if c != target]
+    """Auto-detect sensitive features using heuristics across ALL columns."""
+    all_cols = [c for c in df.columns if c != target]
+    if not all_cols:
+        return []
 
-    # Always try heuristic first (instant)
+    # Comprehensive sensitive feature keywords
     sensitive_keywords = [
         "sex", "gender", "race", "ethnicity", "age", "nationality",
-        "native_country", "marital", "religion",
+        "native_country", "marital", "religion", "color", "skin",
+        "disability", "pregnant", "veteran", "citizen", "country",
+        "origin", "language", "caste", "tribe",
     ]
 
-    if not cat_cols:
-        all_cols = [c for c in df.columns if c != target]
-        if not all_cols:
-            return []
-        detected = [
-            col for col in all_cols
-            if any(kw in col.lower() for kw in sensitive_keywords)
-        ]
-        return detected if detected else all_cols[:2]
-
-    # Heuristic detection first
+    # Search ALL columns (not just categoricals) for keyword matches
     detected = [
-        col for col in cat_cols
+        col for col in all_cols
         if any(kw in col.lower() for kw in sensitive_keywords)
     ]
 
     if detected:
+        logger.info(f"Heuristic detected sensitive features: {detected}")
         return detected
 
-    # Only use Gemini in full mode
-    if config.get("speed") != "fast":
-        try:
-            client = GeminiClient(config=config)
-            gemini_detected = client.detect_sensitive_features(cat_cols)
-            if gemini_detected:
-                logger.info(f"Gemini detected sensitive features: {gemini_detected}")
-                return gemini_detected
-        except Exception as e:
-            logger.warning(f"Gemini detection failed: {e}")
+    # Fallback: categorical columns with low cardinality (likely demographics)
+    cat_cols = df.select_dtypes(include=["object", "category"]).columns.tolist()
+    cat_cols = [c for c in cat_cols if c != target]
+    low_card = [c for c in cat_cols if df[c].nunique() <= 10]
 
-    return cat_cols[:2]
+    if low_card:
+        return low_card[:3]
+
+    # Last resort: any low-cardinality columns
+    low_card_any = [c for c in all_cols if df[c].nunique() <= 10]
+    if low_card_any:
+        return low_card_any[:2]
+
+    # Absolute fallback
+    return all_cols[:2]
 
 
 def _strip_non_serialisable(d: Dict[str, Any]) -> Dict[str, Any]:

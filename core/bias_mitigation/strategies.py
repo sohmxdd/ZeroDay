@@ -181,6 +181,19 @@ def apply_resampling(
             resampled_frames.append(group_df)
 
     result_df = pd.concat(resampled_frames, ignore_index=True)
+
+    # Safety check: ensure we didn't produce an empty DataFrame
+    if len(result_df) == 0:
+        logger.warning("Resampling produced empty dataset — returning original")
+        return {
+            "X": X.copy(),
+            "y": y.copy(),
+            "sample_weight": None,
+            "model": None,
+            "thresholds": None,
+            "metadata": {"technique": "resampling", "method": method, "fallback": True},
+        }
+
     # Shuffle
     result_df = result_df.sample(frac=1.0, random_state=rng).reset_index(drop=True)
 
@@ -253,6 +266,10 @@ def apply_smote(
             X_res, y_res = smote.fit_resample(X_numeric, y)
             X_res = pd.DataFrame(X_res, columns=X_numeric.columns)
             y_res = pd.Series(y_res, name=y.name)
+
+            # Sanitize: SMOTE can introduce NaN/Inf on edge cases
+            X_res = X_res.fillna(0)
+            X_res = X_res.replace([np.inf, -np.inf], 0)
 
             logger.info(
                 f"SMOTE (imbalanced-learn) complete -- {len(X)} -> {len(X_res)} samples"
@@ -570,6 +587,7 @@ def apply_fairlearn_reduction(
             mitigator = fairlearn.ExponentiatedGradient(
                 estimator=base_estimator,
                 constraints=constraint_obj,
+                max_iter=20,   # Cap iterations for speed
             )
             mitigator.fit(X_numeric, y, sensitive_features=sensitive)
 
@@ -685,8 +703,8 @@ def execute_strategy(
         all_metadata.append(result.get("metadata", {}))
 
     return {
-        "X": current_X,
-        "y": current_y,
+        "X": current_X.fillna(0).replace([np.inf, -np.inf], 0),
+        "y": current_y.fillna(0) if current_y.isnull().any() else current_y,
         "sample_weight": current_weight,
         "model": current_model,
         "thresholds": current_thresholds,
