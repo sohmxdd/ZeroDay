@@ -200,6 +200,22 @@ Keep the response concise (under 300 words).
             return "Bias detected: " + "; ".join(insights)
         return "Bias analysis complete. See metrics for details."
 
+    def explain_bias_fast(self, bias_report: Dict[str, Any]) -> str:
+        """
+        Generate a fast, template-based bias explanation without LLM.
+
+        Used in fast mode to avoid blocking on API calls.
+        """
+        insights = bias_report.get("insights", [])
+        if insights:
+            return (
+                f"Bias analysis detected {len(insights)} issue(s): "
+                + "; ".join(insights[:3])
+                + (f" (and {len(insights)-3} more)" if len(insights) > 3 else "")
+                + ". See the detection tab for detailed metrics."
+            )
+        return "Bias analysis complete. See metrics for details."
+
     def explain_mitigation(self, context: Dict[str, Any]) -> Dict[str, str]:
         """
         Generate structured explanations of mitigation results.

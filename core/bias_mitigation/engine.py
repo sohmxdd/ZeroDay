@@ -30,6 +30,7 @@ Usage::
     model_output   = result["model_output"]
 """
 
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -187,22 +188,30 @@ class BiasMitigationEngine:
         # Step 3: Generate Candidate Pipelines
         # ---------------------------------------------------------------
         logger.info("Step 3/7: Generating candidate pipelines ...")
-        candidate_pipelines = generate_candidates(strategy_selection)
+        max_candidates = self.config.get("max_candidates", 10)
+        candidate_pipelines = generate_candidates(
+            strategy_selection, max_candidates=max_candidates
+        )
         logger.info(f"  -> {len(candidate_pipelines)} pipelines generated")
 
         # ---------------------------------------------------------------
         # Step 4: Train Models
         # ---------------------------------------------------------------
+        t_train = time.time()
         logger.info("Step 4/7: Training models ...")
+        # In fast mode, force logistic_regression for speed
+        effective_model_type = model_type
+        if self.config.get("speed") == "fast":
+            effective_model_type = "logistic_regression"
         training_output = train_models(
             candidate_pipelines=candidate_pipelines,
             X=X,
             y=y,
             sensitive=primary_s,
-            model_type=model_type,
+            model_type=effective_model_type,
             config=self.config,
         )
-        logger.info(f"  -> {len(training_output)} models trained successfully")
+        logger.info(f"  -> {len(training_output)} models trained in {time.time()-t_train:.2f}s")
 
         # ---------------------------------------------------------------
         # Step 5: Evaluate Models
@@ -233,20 +242,95 @@ class BiasMitigationEngine:
             comparison = compare_before_after(baseline_eval, best_eval)
 
         # ---------------------------------------------------------------
-        # Step 7: LLM Explanation
+        # Step 7: LLM Explanation (deferred in fast mode)
         # ---------------------------------------------------------------
-        logger.info("Step 7/7: Generating LLM explanation ...")
-        reasoner_input = {
-            "bias_types": detected_bias_types,
-            "candidate_strategies": candidate_pipelines,
-            "best_strategy": best_strategy,
-            "best_score": ranking["best_score"],
-            "fairness_improvement": improvement.get("fairness_improvement", 0.0),
-            "accuracy_drop": improvement.get("accuracy_drop", 0.0),
-            "ranking_table": ranking["ranking_table"],
-            "comparison": comparison,
-        }
-        llm_summary = explain_with_gemini(reasoner_input, config=self.config)
+        if self.config.get("speed") == "fast":
+            logger.info("Step 7/7: [FAST] Generating template explanation ...")
+
+            # Build data-driven explanations
+            acc_drop = improvement.get("accuracy_drop", 0.0)
+            fair_imp = improvement.get("fairness_improvement", 0.0)
+            bias_str = ", ".join(detected_bias_types) if detected_bias_types else "none"
+            n_strategies = len(ranking.get("ranking_table", []))
+
+            # --- Bias Explanation ---
+            bias_details = []
+            for bt in detected_bias_types:
+                if bt == "outcome_bias":
+                    bias_details.append("Outcome Bias: Certain demographic groups receive systematically different prediction outcomes, indicating the model may be encoding historical discrimination patterns in its decision boundary.")
+                elif bt == "representation_bias":
+                    bias_details.append("Representation Bias: The training data contains unequal representation across demographic groups, which can cause the model to perform poorly for underrepresented populations.")
+                elif bt == "fairness_violation":
+                    bias_details.append("Fairness Violation: Statistical fairness metrics (demographic parity, equalized odds) exceed acceptable thresholds, suggesting the model's predictions are correlated with protected attributes.")
+                elif bt == "proxy_bias":
+                    bias_details.append("Proxy Bias: Non-protected features are highly correlated with sensitive attributes, allowing the model to indirectly discriminate even without direct access to protected characteristics.")
+                elif bt == "intersectional_bias":
+                    bias_details.append("Intersectional Bias: Compound disadvantage detected at the intersection of multiple protected attributes (e.g., race + gender), where bias is amplified beyond what single-attribute analysis reveals.")
+                else:
+                    bias_details.append(f"{bt.replace('_', ' ').title()}: Detected through automated fairness auditing.")
+
+            bias_explanation = (
+                f"AEGIS detected {len(detected_bias_types)} type(s) of bias in the dataset: {bias_str}.\n\n"
+                + "\n\n".join(bias_details)
+                + "\n\nThese findings indicate systemic fairness concerns that require corrective intervention to ensure equitable model behavior across all demographic groups."
+            )
+
+            # --- Strategy Justification ---
+            strategy_explanation_map = {
+                "threshold_optimization": f"Threshold Optimization was selected because it directly addresses outcome disparity by calibrating classification thresholds per demographic group. Rather than modifying training data or model weights, it adjusts the decision boundary post-hoc, preserving model accuracy while significantly reducing demographic parity gaps. This approach is particularly effective when the underlying model is well-calibrated but applies uniform thresholds that disadvantage certain groups.",
+                "reweighting": f"Reweighting was selected because it addresses representation bias at the data level by assigning higher importance to underrepresented group-outcome combinations during training. This pre-processing technique corrects for historical sampling imbalance without altering the feature space, making it a robust choice when the primary bias source is unequal group representation in the training data.",
+                "fairlearn_reduction": f"Fairlearn Reduction was selected as it formulates fair classification as a constrained optimization problem, directly minimizing a fairness violation metric (demographic parity or equalized odds) while maintaining accuracy. This in-processing technique is mathematically principled and provides theoretical guarantees on the fairness-accuracy tradeoff.",
+                "smote_oversampling": f"SMOTE Oversampling was selected to address severe class imbalance in minority demographic groups by synthesizing new training examples in feature space. This pre-processing technique is effective when underrepresentation is the primary driver of biased predictions.",
+                "baseline": f"The baseline model (no mitigation) achieved the best overall tradeoff score. This may indicate that the detected biases, while statistically present, do not significantly impact the model's fairness metrics at the chosen threshold. Consider running with a higher fairness weight (β) to prioritize equity over accuracy.",
+            }
+            strategy_justification = strategy_explanation_map.get(
+                best_strategy,
+                f"The '{best_strategy}' strategy was selected as it achieved the highest combined fairness-accuracy tradeoff score ({ranking['best_score']:.4f}) among {n_strategies} evaluated candidates. This strategy balances predictive performance with equitable outcomes across all demographic groups."
+            )
+
+            # --- Tradeoff Analysis ---
+            tradeoff_analysis = (
+                f"The fairness-accuracy tradeoff analysis evaluated {n_strategies} candidate strategies using a weighted scoring formula: "
+                f"Score = α × Accuracy + β × (1 - Unfairness), where α={self.config.get('alpha', 0.6)} and β={self.config.get('beta', 0.4)}.\n\n"
+                f"The selected strategy '{best_strategy}' achieved a tradeoff score of {ranking['best_score']:.4f}. "
+                f"Accuracy impact: {acc_drop:+.4f} (negative = accuracy decreased). "
+                f"Fairness improvement: {fair_imp:.4f} (higher = more equitable).\n\n"
+                f"This represents a {'favorable' if fair_imp > abs(acc_drop) else 'moderate'} tradeoff where "
+                f"{'fairness gains outweigh accuracy costs' if fair_imp > abs(acc_drop) else 'accuracy preservation was prioritized alongside fairness improvements'}."
+            )
+
+            # --- Recommendation ---
+            recommendation = (
+                f"Based on the analysis, we recommend deploying the '{best_strategy}' strategy for production use. "
+                f"Key next steps:\n\n"
+                f"1. Validate the mitigated model on a held-out test set to confirm fairness improvements generalize.\n"
+                f"2. Monitor demographic parity and equalized odds metrics in production with continuous auditing.\n"
+                f"3. Consider re-running with 'full' speed mode and Gemini AI enabled for deeper natural language insights.\n"
+                f"4. Document the bias-mitigation decision for regulatory compliance (EU AI Act, NIST AI RMF).\n"
+                f"5. Schedule periodic re-audits as training data evolves to prevent bias drift."
+            )
+
+            llm_summary = {
+                "summary": f"AEGIS bias governance analysis complete. Detected {len(detected_bias_types)} bias types ({bias_str}). Applied '{best_strategy}' mitigation with a tradeoff score of {ranking['best_score']:.4f}. Accuracy impact: {acc_drop:+.4f}, Fairness improvement: {fair_imp:.4f}.",
+                "bias_explanation": bias_explanation,
+                "strategy_justification": strategy_justification,
+                "tradeoff_analysis": tradeoff_analysis,
+                "recommendation": recommendation,
+                "gemini_used": False,
+            }
+        else:
+            logger.info("Step 7/7: Generating LLM explanation ...")
+            reasoner_input = {
+                "bias_types": detected_bias_types,
+                "candidate_strategies": candidate_pipelines,
+                "best_strategy": best_strategy,
+                "best_score": ranking["best_score"],
+                "fairness_improvement": improvement.get("fairness_improvement", 0.0),
+                "accuracy_drop": improvement.get("accuracy_drop", 0.0),
+                "ranking_table": ranking["ranking_table"],
+                "comparison": comparison,
+            }
+            llm_summary = explain_with_gemini(reasoner_input, config=self.config)
 
         # ---------------------------------------------------------------
         # Build Outputs

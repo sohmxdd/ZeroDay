@@ -5,6 +5,11 @@ numpy>=1.23.0
 scikit-learn>=1.2.0
 python-dotenv>=1.0.0
 
+# API server
+fastapi>=0.100.0
+uvicorn>=0.23.0
+python-multipart>=0.0.6
+
 # Visualization
 matplotlib>=3.6.0
 seaborn>=0.12.0

@@ -69,11 +69,15 @@ def compute_performance_metrics(
     Returns:
         Dict with accuracy, precision, recall, f1.
     """
+    # Auto-detect binary vs multiclass
+    n_classes = len(np.unique(y_true))
+    avg = "binary" if n_classes <= 2 else "weighted"
+
     return {
         "accuracy": float(accuracy_score(y_true, y_pred)),
-        "precision": float(precision_score(y_true, y_pred, zero_division=0)),
-        "recall": float(recall_score(y_true, y_pred, zero_division=0)),
-        "f1": float(f1_score(y_true, y_pred, zero_division=0)),
+        "precision": float(precision_score(y_true, y_pred, zero_division=0, average=avg)),
+        "recall": float(recall_score(y_true, y_pred, zero_division=0, average=avg)),
+        "f1": float(f1_score(y_true, y_pred, zero_division=0, average=avg)),
     }
 
 

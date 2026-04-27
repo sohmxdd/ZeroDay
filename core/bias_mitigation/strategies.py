@@ -465,7 +465,7 @@ def apply_threshold_optimization(
     # Fit model if needed
     if estimator is None:
         estimator = LogisticRegression(
-            max_iter=1000,
+            max_iter=200,
             random_state=cfg["random_state"],
             solver="lbfgs",
         )
@@ -562,7 +562,7 @@ def apply_fairlearn_reduction(
             constraint_obj = constraint_cls()
 
             base_estimator = LogisticRegression(
-                max_iter=1000,
+                max_iter=200,
                 random_state=cfg["random_state"],
                 solver="lbfgs",
             )

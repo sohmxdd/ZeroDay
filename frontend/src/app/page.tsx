@@ -8,8 +8,6 @@ import {
   ChevronRight, Zap, Lock, BarChart3, Shield, MoveRight,
 } from "lucide-react";
 import { WebGLShader } from "@/components/ui/web-gl-shader";
-import { LiquidButton } from "@/components/ui/liquid-glass-button";
-import { Button } from "@/components/ui/button";
 
 const FEATURES = [
   {
@@ -68,11 +66,11 @@ function AnimatedHero() {
         animate={{ opacity: 1, scale: 1 }}
         transition={{ delay: 0.1 }}
       >
-        <Button variant="secondary" size="sm" className="gap-3 bg-white/10 border border-white/10 text-white/80 hover:bg-white/15 backdrop-blur-sm rounded-full px-5">
+        <span className="inline-flex items-center gap-3 bg-white/10 border border-white/10 text-white/80 backdrop-blur-sm rounded-full px-5 py-2 text-sm">
           <Zap className="w-3.5 h-3.5" />
           Powered by Gemini AI
           <MoveRight className="w-3.5 h-3.5" />
-        </Button>
+        </span>
       </motion.div>
 
 
@@ -109,15 +107,22 @@ function AnimatedHero() {
 
       {/* CTA Buttons */}
       <div className="flex flex-row gap-4">
-        <Link href="/results">
-          <Button size="lg" className="gap-3 bg-white/5 border border-white/10 text-white/70 hover:bg-white/10 hover:text-white backdrop-blur-sm" variant="outline">
-            Explore Demo <ChevronRight className="w-4 h-4" />
-          </Button>
-        </Link>
+        <button
+          onClick={() => {
+            if (typeof window !== "undefined") {
+              localStorage.removeItem("aegis_result");
+              localStorage.setItem("aegis_demo", "true");
+              window.location.href = "/results";
+            }
+          }}
+          className="flex items-center gap-3 px-8 py-3.5 rounded-2xl border border-white/10 bg-white/5 backdrop-blur-sm hover:bg-white/10 text-white/70 hover:text-white font-semibold transition-all text-sm"
+        >
+          Explore Demo <ChevronRight className="w-4 h-4" />
+        </button>
         <Link href="/upload">
-          <LiquidButton className="text-white border border-white/20 rounded-full" size="xl">
+          <button className="flex items-center gap-3 px-8 py-3.5 rounded-2xl border border-white/20 bg-white/[0.08] backdrop-blur-sm hover:bg-white/15 text-white font-semibold transition-all text-sm shadow-[0_0_25px_rgba(255,255,255,0.12),0_0_60px_rgba(255,255,255,0.05)] hover:shadow-[0_0_30px_rgba(255,255,255,0.2),0_0_80px_rgba(255,255,255,0.08)]">
             Begin Bias Analysis <ArrowRight className="w-4 h-4" />
-          </LiquidButton>
+          </button>
         </Link>
       </div>
     </div>
