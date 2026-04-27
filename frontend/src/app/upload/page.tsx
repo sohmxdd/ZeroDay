@@ -3,29 +3,32 @@
 import { useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useRouter } from "next/navigation";
-import Image from "next/image";
 import {
   Upload, FileSpreadsheet, X, Play, Settings2,
-  ChevronDown, Database, Cpu, Box, Check,
+  ChevronDown, Database, Cpu, Box, Check, Loader2, AlertCircle,
 } from "lucide-react";
 import Navbar from "@/components/layout/Navbar";
+import { PipelineLoader } from "@/components/loaders/PipelineLoader";
 import { cn } from "@/lib/utils";
-import { PipelineMode } from "@/lib/types";
 
-const MODES: { value: PipelineMode; label: string; desc: string }[] = [
-  { value: "full_pipeline", label: "Full Pipeline", desc: "Detection + Mitigation + Comparison + Explainability" },
-  { value: "analysis", label: "Analysis Only", desc: "Bias detection and dataset statistical comparison" },
-  { value: "train", label: "Train & Evaluate", desc: "Detection + Mitigation with model training" },
-];
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
 
 export default function UploadPage() {
   const router = useRouter();
   const [file, setFile] = useState<File | null>(null);
   const [modelFile, setModelFile] = useState<File | null>(null);
-  const [mode, setMode] = useState<PipelineMode>("full_pipeline");
+  const [mode] = useState("full_pipeline");
   const [isDragging, setIsDragging] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [selectedModelType, setSelectedModelType] = useState("logistic_regression");
+  const [alpha, setAlpha] = useState(0.6);
+  const [beta, setBeta] = useState(0.4);
+
+  // Pipeline execution state
+  const [isRunning, setIsRunning] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [currentPhase, setCurrentPhase] = useState(-1); // -1=idle, 0-5=phases
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -45,8 +48,58 @@ export default function UploadPage() {
     if (f && f.name.endsWith(".pkl")) setModelFile(f);
   };
 
-  const handleRun = () => {
-    router.push("/processing");
+  const handleRun = async () => {
+    setIsRunning(true);
+    setError(null);
+    setCurrentPhase(0); // Loading Data
+
+    try {
+      const formData = new FormData();
+      if (file) formData.append("dataset", file);
+      formData.append("mode", mode);
+      formData.append("speed", "fast");
+      formData.append("model_type", selectedModelType);
+      formData.append("alpha", alpha.toString());
+      formData.append("beta", beta.toString());
+      if (modelFile) formData.append("model", modelFile);
+
+      // Simulate phase progression while waiting for response
+      const phaseTimer = setInterval(() => {
+        setCurrentPhase((prev) => (prev < 4 ? prev + 1 : prev));
+      }, 1800);
+
+      const res = await fetch(`${API_URL}/api/run-pipeline`, {
+        method: "POST",
+        body: formData,
+      });
+
+      clearInterval(phaseTimer);
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "Server error" }));
+        throw new Error(err.error || `Server returned ${res.status}`);
+      }
+
+      const result = await res.json();
+
+      // Show completion phase
+      setCurrentPhase(5);
+      localStorage.setItem("aegis_result", JSON.stringify(result));
+      localStorage.removeItem("aegis_demo");
+
+      // Brief pause to show "Complete" then navigate
+      await new Promise((r) => setTimeout(r, 800));
+      router.push("/results");
+    } catch (err: any) {
+      console.error("Pipeline error:", err);
+      setError(
+        err.message === "Failed to fetch"
+          ? "Cannot connect to AEGIS backend. Please ensure the server is running (python server.py)."
+          : err.message || "An unexpected error occurred."
+      );
+      setIsRunning(false);
+      setCurrentPhase(-1);
+    }
   };
 
   const activeModelSource = modelFile ? "uploaded" : "selected";
@@ -153,43 +206,34 @@ export default function UploadPage() {
               </label>
             )}
           </div>
-          {/* Active model indicator */}
           <div className="flex items-center gap-2 mt-2 text-[10px] text-[var(--color-text-muted)]">
             <Check className="w-3 h-3 text-[var(--color-success)]" />
             Active: {activeModelSource === "uploaded" ? `Uploaded model (${modelFile?.name})` : `${selectedModelType.replace("_", " ")} (built-in)`}
           </div>
         </motion.div>
 
-        {/* ──── Pipeline Mode ──── */}
-        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }} className="mt-8">
-          <label className="text-[10px] font-bold uppercase tracking-widest text-[var(--color-text-muted)] block mb-3">
-            Pipeline Mode
-          </label>
-          <div className="grid grid-cols-3 gap-3">
-            {MODES.map((m) => (
-              <button
-                key={m.value}
-                onClick={() => setMode(m.value)}
-                className={cn(
-                  "p-4 rounded-xl border text-left transition-all duration-200",
-                  mode === m.value
-                    ? "border-[var(--color-accent)]/40 bg-[var(--color-accent-muted)] glow-sm"
-                    : "border-[var(--color-border)] bg-[var(--color-surface)] hover:border-[var(--color-accent)]/20"
-                )}
-              >
-                <p className="text-sm font-semibold mb-1">{m.label}</p>
-                <p className="text-[10px] text-[var(--color-text-muted)] leading-relaxed">{m.desc}</p>
-              </button>
-            ))}
-          </div>
-        </motion.div>
-
         {/* ──── Advanced Settings ──── */}
-        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }} className="mt-6">
-          <button onClick={() => setShowSettings(!showSettings)} className="flex items-center gap-2 text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] transition-colors font-medium">
-            <Settings2 className="w-3.5 h-3.5" />
-            Advanced Configuration
-            <ChevronDown className={cn("w-3.5 h-3.5 transition-transform duration-200", showSettings && "rotate-180")} />
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }} className="mt-8">
+          <button
+            onClick={() => setShowSettings(!showSettings)}
+            className={cn(
+              "w-full flex items-center gap-3 px-5 py-4 rounded-xl border text-left transition-all duration-200",
+              showSettings
+                ? "border-[var(--color-accent)]/40 bg-[var(--color-accent-muted)]"
+                : "border-[var(--color-border)] bg-[var(--color-surface)] hover:border-[var(--color-accent)]/30 hover:bg-[var(--color-surface-hover)]"
+            )}
+          >
+            <div className={cn(
+              "w-8 h-8 rounded-lg flex items-center justify-center shrink-0 transition-colors",
+              showSettings ? "bg-[var(--color-accent)] text-white" : "bg-[var(--color-surface-elevated)] text-[var(--color-text-muted)]"
+            )}>
+              <Settings2 className="w-4 h-4" />
+            </div>
+            <div className="flex-1">
+              <p className="text-sm font-semibold">Advanced Configuration</p>
+              <p className="text-[10px] text-[var(--color-text-muted)] mt-0.5">Accuracy-fairness weights, model architecture, and AI settings</p>
+            </div>
+            <ChevronDown className={cn("w-4 h-4 text-[var(--color-text-muted)] transition-transform duration-200", showSettings && "rotate-180")} />
           </button>
 
           <AnimatePresence>
@@ -198,11 +242,11 @@ export default function UploadPage() {
                 <div className="grid grid-cols-2 gap-4 mt-4 p-5 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)]">
                   <div>
                     <label className="text-[10px] font-bold uppercase tracking-widest text-[var(--color-text-muted)] block mb-2">Accuracy Weight (α)</label>
-                    <input type="number" defaultValue={0.6} step={0.1} min={0} max={1} className="w-full px-3 py-2.5 rounded-lg bg-[var(--color-surface-elevated)] border border-[var(--color-border)] text-sm text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent)] transition-colors" />
+                    <input type="number" value={alpha} onChange={(e) => setAlpha(parseFloat(e.target.value) || 0.6)} step={0.1} min={0} max={1} className="w-full px-3 py-2.5 rounded-lg bg-[var(--color-surface-elevated)] border border-[var(--color-border)] text-sm text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent)] transition-colors" />
                   </div>
                   <div>
                     <label className="text-[10px] font-bold uppercase tracking-widest text-[var(--color-text-muted)] block mb-2">Fairness Weight (β)</label>
-                    <input type="number" defaultValue={0.4} step={0.1} min={0} max={1} className="w-full px-3 py-2.5 rounded-lg bg-[var(--color-surface-elevated)] border border-[var(--color-border)] text-sm text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent)] transition-colors" />
+                    <input type="number" value={beta} onChange={(e) => setBeta(parseFloat(e.target.value) || 0.4)} step={0.1} min={0} max={1} className="w-full px-3 py-2.5 rounded-lg bg-[var(--color-surface-elevated)] border border-[var(--color-border)] text-sm text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent)] transition-colors" />
                   </div>
                   <div>
                     <label className="text-[10px] font-bold uppercase tracking-widest text-[var(--color-text-muted)] block mb-2">Model Architecture</label>
@@ -225,36 +269,108 @@ export default function UploadPage() {
           </AnimatePresence>
         </motion.div>
 
+        {/* ──── Error Banner ──── */}
+        <AnimatePresence>
+          {error && (
+            <motion.div
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="mt-6 p-4 rounded-xl border border-[var(--color-danger)]/30 bg-[var(--color-danger-muted)] flex items-start gap-3"
+            >
+              <AlertCircle className="w-5 h-5 text-[var(--color-danger)] shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <p className="text-sm font-semibold text-[var(--color-danger)]">Pipeline Error</p>
+                <p className="text-xs text-[var(--color-text-secondary)] mt-1">{error}</p>
+              </div>
+              <button onClick={() => setError(null)} className="p-1 rounded hover:bg-white/5">
+                <X className="w-4 h-4 text-[var(--color-text-muted)]" />
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         {/* ──── Execute Button ──── */}
-        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.25 }} className="mt-10 flex justify-center">
-          <button onClick={handleRun} className="group flex items-center gap-3 px-10 py-4 rounded-2xl bg-[var(--color-accent)] hover:bg-[var(--color-accent-hover)] text-white font-bold text-base transition-all glow">
-            <Play className="w-5 h-5" />
-            Execute Bias Analysis Pipeline
-          </button>
-        </motion.div>
+        {!isRunning && (
+          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.25 }} className="mt-10 flex flex-col items-center gap-3">
+            <button
+              onClick={handleRun}
+              className="group flex items-center gap-3 px-10 py-4 rounded-2xl font-bold text-base transition-all bg-[var(--color-accent)] hover:bg-[var(--color-accent-hover)] text-white glow"
+            >
+              <Play className="w-5 h-5" />
+              Execute Bias Analysis Pipeline
+            </button>
+          </motion.div>
+        )}
 
         {/* ──── Info Footer ──── */}
-        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.3 }} className="grid grid-cols-2 gap-4 mt-12">
-          <div className="flex items-start gap-3 p-4 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)]">
-            <Database className="w-4 h-4 text-[var(--color-accent)] mt-0.5 shrink-0" />
-            <div>
-              <p className="text-xs font-semibold mb-0.5">No dataset available?</p>
-              <p className="text-[10px] text-[var(--color-text-muted)] leading-relaxed">
-                Execute without uploading to use the built-in UCI Adult dataset for demonstration purposes.
-              </p>
+        {!isRunning && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.3 }} className="grid grid-cols-2 gap-4 mt-12">
+            <div className="flex items-start gap-3 p-4 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)]">
+              <Database className="w-4 h-4 text-[var(--color-accent)] mt-0.5 shrink-0" />
+              <div>
+                <p className="text-xs font-semibold mb-0.5">No dataset available?</p>
+                <p className="text-[10px] text-[var(--color-text-muted)] leading-relaxed">
+                  Execute without uploading to use the built-in UCI Adult dataset for demonstration purposes.
+                </p>
+              </div>
             </div>
-          </div>
-          <div className="flex items-start gap-3 p-4 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)]">
-            <Cpu className="w-4 h-4 text-[var(--color-accent)] mt-0.5 shrink-0" />
-            <div>
-              <p className="text-xs font-semibold mb-0.5">Estimated Processing Time</p>
-              <p className="text-[10px] text-[var(--color-text-muted)] leading-relaxed">
-                Full pipeline completes in ~30 seconds. Analysis-only mode completes in under 1 second.
-              </p>
+            <div className="flex items-start gap-3 p-4 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)]">
+              <Cpu className="w-4 h-4 text-[var(--color-accent)] mt-0.5 shrink-0" />
+              <div>
+                <p className="text-xs font-semibold mb-0.5">Estimated Processing Time</p>
+                <p className="text-[10px] text-[var(--color-text-muted)] leading-relaxed">
+                  Full pipeline completes in ~5 seconds. Analysis-only mode completes in under 2 seconds.
+                </p>
+              </div>
             </div>
-          </div>
-        </motion.div>
+          </motion.div>
+        )}
       </main>
+
+      {/* ══════ FULL-SCREEN PROCESSING OVERLAY ══════ */}
+      <AnimatePresence>
+        {isRunning && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-[var(--color-background)]"
+          >
+            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] bg-[var(--color-accent)] opacity-[0.04] blur-[140px] rounded-full pointer-events-none" />
+
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.1 }}
+              className="relative z-10 w-full max-w-xl px-6"
+            >
+              <div className="text-center mb-10">
+                <motion.div
+                  initial={{ scale: 0.9 }}
+                  animate={{ scale: 1 }}
+                  className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-[var(--color-accent-muted)] border border-[var(--color-accent)]/20 text-[var(--color-accent)] text-[11px] font-bold uppercase tracking-widest mb-4"
+                >
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  Pipeline Active
+                </motion.div>
+                <h1 className="text-2xl font-bold mb-2">Executing Analysis</h1>
+                <p className="text-sm text-[var(--color-text-muted)]">
+                  Analyzing your dataset for bias patterns and generating corrective insights...
+                </p>
+              </div>
+
+              <PipelineLoader currentStep={currentPhase} />
+
+              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.5 }} className="text-center mt-10">
+                <p className="text-[11px] text-[var(--color-text-muted)]">
+                  Optimized fast mode &bull; Estimated completion: ~5 seconds
+                </p>
+              </motion.div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

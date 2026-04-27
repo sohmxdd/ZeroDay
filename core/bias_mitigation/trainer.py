@@ -78,7 +78,7 @@ def _get_model_instance(
     rs = config.get("random_state", 42)
 
     if model_type == "logistic_regression":
-        return LogisticRegression(max_iter=1000, random_state=rs, solver="lbfgs")
+        return LogisticRegression(max_iter=200, random_state=rs, solver="lbfgs")
 
     if model_type == "random_forest":
         return RandomForestClassifier(

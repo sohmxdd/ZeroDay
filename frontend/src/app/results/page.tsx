@@ -4,7 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import { motion } from "framer-motion";
 import {
   Search, Wrench, GitCompare, Brain, Download, BarChart3,
-  FileSpreadsheet, Box, FileText,
+  FileSpreadsheet, Box, FileText, FlaskConical, AlertTriangle,
 } from "lucide-react";
 import Navbar from "@/components/layout/Navbar";
 import { OverviewTab } from "@/components/tabs/OverviewTab";
@@ -15,6 +15,7 @@ import { ExplainabilityTab } from "@/components/tabs/ExplainabilityTab";
 import { MOCK_RESULT } from "@/lib/mock-data";
 import { downloadJSON, downloadPDF, downloadCSV } from "@/lib/exports";
 import { cn } from "@/lib/utils";
+import type { AegisResult } from "@/lib/types";
 
 const TABS = [
   { id: "overview", label: "Overview", icon: BarChart3 },
@@ -28,7 +29,29 @@ export default function ResultsPage() {
   const [activeTab, setActiveTab] = useState("overview");
   const [showExport, setShowExport] = useState(false);
   const exportRef = useRef<HTMLDivElement>(null);
-  const data = MOCK_RESULT;
+  const [data, setData] = useState<AegisResult | null>(null);
+  const [isDemo, setIsDemo] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+
+  // Load data: real pipeline result from localStorage, or fallback to demo
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem("aegis_result");
+      const demoFlag = localStorage.getItem("aegis_demo");
+
+      if (stored && !demoFlag) {
+        setData(JSON.parse(stored));
+        setIsDemo(false);
+      } else {
+        setData(MOCK_RESULT);
+        setIsDemo(true);
+      }
+    } catch {
+      setData(MOCK_RESULT);
+      setIsDemo(true);
+    }
+    setIsLoading(false);
+  }, []);
 
   // Close export dropdown on outside click
   useEffect(() => {
@@ -41,24 +64,34 @@ export default function ResultsPage() {
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
+  if (isLoading || !data) {
+    return (
+      <div className="min-h-screen bg-[var(--color-background)] flex items-center justify-center">
+        <Navbar />
+        <div className="text-center">
+          <div className="w-8 h-8 border-2 border-[var(--color-accent)] border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+          <p className="text-sm text-[var(--color-text-muted)]">Loading results...</p>
+        </div>
+      </div>
+    );
+  }
+
   const handleExportReport = () => {
     downloadPDF(data, "aegis_bias_report.pdf");
     setShowExport(false);
   };
 
   const handleExportDataset = () => {
-    // Export debiased dataset as CSV (simulated)
-    const headers = data.dataset_analysis.dataset_comparison.debiased_stats.columns;
+    const headers = data.dataset_analysis?.dataset_comparison?.debiased_stats?.columns || [];
     downloadCSV(headers, [], "aegis_debiased_dataset.csv");
     setShowExport(false);
   };
 
   const handleExportModel = () => {
-    // Export model config as JSON (simulated — real PKL comes from backend)
     downloadJSON({
-      strategy: data.metadata.strategy_used,
-      model_type: data.metadata.config.model_type,
-      accuracy: data.model_analysis.ranking.ranking_table[0]?.accuracy,
+      strategy: data.metadata?.strategy_used,
+      model_type: data.metadata?.config?.model_type,
+      accuracy: data.model_analysis?.ranking?.ranking_table?.[0]?.accuracy,
       exported_at: new Date().toISOString(),
     }, "aegis_debiased_model.json");
     setShowExport(false);
@@ -69,11 +102,31 @@ export default function ResultsPage() {
     setShowExport(false);
   };
 
+  // Derive display info
+  const modeName = data.metadata?.mode?.replace("_", " ") || "pipeline";
+  const elapsed = data.metadata?.elapsed_seconds || 0;
+  const strategyUsed = data.metadata?.strategy_used || "none";
+
   return (
     <div className="min-h-screen bg-[var(--color-background)]">
       <Navbar />
 
       <main className="max-w-7xl mx-auto px-6 pt-24 pb-20">
+        {/* Demo banner */}
+        {isDemo && (
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mb-6 p-3 rounded-xl border border-[var(--color-warning)]/30 bg-[var(--color-warning-muted)] flex items-center gap-3"
+          >
+            <FlaskConical className="w-4 h-4 text-[var(--color-warning)] shrink-0" />
+            <p className="text-xs text-[var(--color-text-secondary)]">
+              <span className="font-bold text-[var(--color-warning)]">Demo Mode</span> — You are viewing pre-computed results from the UCI Adult dataset.
+              <a href="/upload" className="ml-1 underline hover:text-[var(--color-accent)]">Upload your own dataset</a> to run a real analysis.
+            </p>
+          </motion.div>
+        )}
+
         {/* Page header */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -81,9 +134,16 @@ export default function ResultsPage() {
           className="flex items-start justify-between mb-8"
         >
           <div>
-            <h1 className="text-2xl font-bold mb-1">Governance Dashboard</h1>
+            <div className="flex items-center gap-3 mb-1">
+              <h1 className="text-2xl font-bold">Governance Dashboard</h1>
+              {!isDemo && (
+                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-[var(--color-success-muted)] text-[var(--color-success)] border border-[var(--color-success)]/20">
+                  LIVE
+                </span>
+              )}
+            </div>
             <p className="text-sm text-[var(--color-text-muted)]">
-              UCI Adult Dataset &middot; {data.metadata.mode.replace("_", " ")} &middot; {data.metadata.elapsed_seconds}s elapsed
+              {modeName} &middot; {strategyUsed !== "none" ? strategyUsed.replace("_", " ") : "analysis"} &middot; {elapsed}s elapsed
             </p>
           </div>
 
@@ -174,10 +234,10 @@ export default function ResultsPage() {
         {/* Active tab content */}
         <motion.div key={activeTab} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.2 }}>
           {activeTab === "overview" && <OverviewTab data={data} />}
-          {activeTab === "detection" && <DetectionTab biasReport={data.dataset_analysis.bias_report} />}
-          {activeTab === "mitigation" && <MitigationTab ranking={data.model_analysis.ranking} explanations={data.explanations} />}
-          {activeTab === "comparison" && <ComparisonTab comparison={data.dataset_analysis.dataset_comparison} />}
-          {activeTab === "explainability" && <ExplainabilityTab explainability={data.model_analysis.explainability} explanations={data.explanations} />}
+          {activeTab === "detection" && <DetectionTab biasReport={data.dataset_analysis?.bias_report} />}
+          {activeTab === "mitigation" && <MitigationTab ranking={data.model_analysis?.ranking} explanations={data.explanations} />}
+          {activeTab === "comparison" && <ComparisonTab comparison={data.dataset_analysis?.dataset_comparison} />}
+          {activeTab === "explainability" && <ExplainabilityTab explainability={data.model_analysis?.explainability} explanations={data.explanations} />}
         </motion.div>
       </main>
     </div>

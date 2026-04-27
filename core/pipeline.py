@@ -10,6 +10,10 @@ This module implements mode-based routing:
     "train"         → Detection + Mitigation + Model training
     "full_pipeline" → Detection + Mitigation + Comparison + Explainability
 
+Speed modes:
+    "fast"  → Subsampled data, 1 strategy, no SHAP, deferred LLM (default for UI)
+    "full"  → All strategies, full evaluation, SHAP, LLM in path
+
 Usage::
 
     from core import run_pipeline
@@ -17,15 +21,18 @@ Usage::
     result = run_pipeline({
         "dataset": "path/to/data.csv",   # or DataFrame or None (synthetic)
         "mode": "full_pipeline",
-        "model": None,                   # optional pre-trained model
-        "target": "approved",            # target column
-        "sensitive_features": ["gender", "race"],  # or None for auto-detect
+        "speed": "fast",                 # NEW: "fast" (default) or "full"
+        "model": None,
+        "target": "approved",
+        "sensitive_features": ["gender", "race"],
     })
 """
 
 import json
 import os
 import time
+import signal
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
@@ -45,6 +52,16 @@ logger = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Performance Constants
+# ---------------------------------------------------------------------------
+
+FAST_MAX_SAMPLES = 5000         # Subsample cap in fast mode
+FAST_MAX_STRATEGIES = 3         # Max candidate pipelines in fast mode (incl. baseline)
+FAST_THRESHOLD_STEPS = 3        # [0.4, 0.5, 0.6] equivalent
+PIPELINE_TIMEOUT_SECONDS = 120  # Hard timeout failsafe
+
+
+# ---------------------------------------------------------------------------
 # Main Entry Point
 # ---------------------------------------------------------------------------
 
@@ -56,6 +73,7 @@ def run_pipeline(input_data: Dict[str, Any]) -> Dict[str, Any]:
         input_data: Input configuration dict with keys:
             - ``dataset``: DataFrame, file path string, or None (synthetic)
             - ``mode``: ``"analysis"`` | ``"train"`` | ``"full_pipeline"`` (default)
+            - ``speed``: ``"fast"`` (default) | ``"full"``
             - ``model``: Optional pre-trained model object
             - ``target``: Target column name (default: auto-detect)
             - ``sensitive_features``: List of sensitive columns (default: auto-detect)
@@ -68,11 +86,12 @@ def run_pipeline(input_data: Dict[str, Any]) -> Dict[str, Any]:
             - ``explanations``
             - ``metadata``
     """
-    start_time = time.time()
+    pipeline_start = time.time()
 
     # --- Parse Input ---
     dataset_source = input_data.get("dataset")
     mode = input_data.get("mode", "full_pipeline")
+    speed = input_data.get("speed", "fast")
     user_model = input_data.get("model")
     target = input_data.get("target")
     sensitive_features = input_data.get("sensitive_features")
@@ -80,12 +99,22 @@ def run_pipeline(input_data: Dict[str, Any]) -> Dict[str, Any]:
 
     config = get_config(config_overrides)
 
+    # Inject speed mode optimizations into config
+    is_fast = speed == "fast"
+    if is_fast:
+        config["threshold_search_steps"] = FAST_THRESHOLD_STEPS
+        config["max_candidates"] = FAST_MAX_STRATEGIES
+        config["speed"] = "fast"
+    else:
+        config["speed"] = "full"
+
     print("=" * 70)
     print("  AEGIS - AI Bias Governance Engine")
     print("=" * 70)
-    print(f"  Mode: {mode}")
+    print(f"  Mode: {mode} | Speed: {speed}")
 
     # --- Phase 0: Load Data ---
+    t0 = time.time()
     print(f"\n[PHASE 0] Loading data...")
     df = load_dataset(dataset_source)
 
@@ -94,6 +123,11 @@ def run_pipeline(input_data: Dict[str, Any]) -> Dict[str, Any]:
         target = _auto_detect_target(df)
     print(f"  Dataset shape: {df.shape}")
     print(f"  Target: '{target}'")
+
+    # *** FAST MODE: Subsample ***
+    if is_fast and len(df) > FAST_MAX_SAMPLES:
+        print(f"  [FAST] Subsampling {len(df)} -> {FAST_MAX_SAMPLES} rows")
+        df = df.sample(n=FAST_MAX_SAMPLES, random_state=42).reset_index(drop=True)
 
     # Auto-detect sensitive features if not specified
     if sensitive_features is None:
@@ -123,19 +157,24 @@ def run_pipeline(input_data: Dict[str, Any]) -> Dict[str, Any]:
     if needs_encoding:
         df, preprocessing_meta = preprocess_dataset(df, target=target)
 
+    print(f"  Phase 0 time: {time.time() - t0:.2f}s")
+
     # ===================================================================
     # PHASE 1: Bias Detection (always runs)
     # ===================================================================
+    t1 = time.time()
     print(f"\n[PHASE 1] Detecting bias...")
     bias_report = detect_bias(df, target, sensitive_features)
     print(f"  Insights found: {len(bias_report['insights'])}")
     for insight in bias_report["insights"]:
         print(f"    - {insight}")
+    print(f"  Phase 1 time: {time.time() - t1:.2f}s")
 
     # ===================================================================
     # MODE: "analysis" — Detection + Dataset Comparison only
     # ===================================================================
     if mode == "analysis":
+        t_analysis = time.time()
         print(f"\n[PHASE 3] Running dataset comparison (analysis mode)...")
         dataset_comparison = compare_datasets(
             baseline_dataset=df,
@@ -145,11 +184,15 @@ def run_pipeline(input_data: Dict[str, Any]) -> Dict[str, Any]:
             bias_report=bias_report,
         )
 
-        # LLM explanation
+        # LLM explanation — deferred in fast mode
         llm_client = GeminiClient(config=config)
-        bias_explanation = llm_client.explain_bias(bias_report)
+        if is_fast:
+            bias_explanation = llm_client.explain_bias_fast(bias_report)
+        else:
+            bias_explanation = llm_client.explain_bias(bias_report)
 
-        elapsed = time.time() - start_time
+        elapsed = time.time() - pipeline_start
+        print(f"  Phase 3 time: {time.time() - t_analysis:.2f}s")
         print(f"\n{'=' * 70}")
         print(f"  ANALYSIS COMPLETE  ({elapsed:.1f}s)")
         print(f"{'=' * 70}")
@@ -170,11 +213,14 @@ def run_pipeline(input_data: Dict[str, Any]) -> Dict[str, Any]:
     # ===================================================================
     # PHASE 2: Bias Mitigation (runs in "train" and "full_pipeline")
     # ===================================================================
+    t2 = time.time()
     print(f"\n[PHASE 2] Running mitigation engine...")
-    model_type = config.get("model_type", "logistic_regression")
+    model_type = "logistic_regression"  # Always use LR in fast mode
+    if not is_fast:
+        model_type = config.get("model_type", "logistic_regression")
     alpha = config.get("alpha", 0.6)
     beta = config.get("beta", 0.4)
-    print(f"  Config: alpha={alpha}, beta={beta}, model={model_type}")
+    print(f"  Config: alpha={alpha}, beta={beta}, model={model_type}, speed={speed}")
 
     engine = BiasMitigationEngine(config=config)
     mitigation_result = engine.run(
@@ -195,12 +241,13 @@ def run_pipeline(input_data: Dict[str, Any]) -> Dict[str, Any]:
     best_strategy = ranking["best_strategy"]
     print(f"  Best strategy: {best_strategy}")
     print(f"  Score: {ranking['best_score']:.4f}")
+    print(f"  Phase 2 time: {time.time() - t2:.2f}s")
 
     # ===================================================================
     # MODE: "train" — Detection + Mitigation only
     # ===================================================================
     if mode == "train":
-        elapsed = time.time() - start_time
+        elapsed = time.time() - pipeline_start
         print(f"\n{'=' * 70}")
         print(f"  TRAINING COMPLETE  ({elapsed:.1f}s)")
         print(f"  Best Strategy: {best_strategy}")
@@ -221,6 +268,7 @@ def run_pipeline(input_data: Dict[str, Any]) -> Dict[str, Any]:
     # ===================================================================
     # PHASE 3: Dataset Comparison (full_pipeline only)
     # ===================================================================
+    t3 = time.time()
     print(f"\n[PHASE 3] Running dataset comparison...")
     baseline_ds = dataset_output.get("baseline_dataset", df)
     debiased_ds = dataset_output.get("debiased_dataset", df)
@@ -232,11 +280,12 @@ def run_pipeline(input_data: Dict[str, Any]) -> Dict[str, Any]:
         sensitive_features=sensitive_features,
         bias_report=bias_report,
     )
-    print(f"  Comparison complete.")
+    print(f"  Phase 3 time: {time.time() - t3:.2f}s")
 
     # ===================================================================
     # PHASE 4: Model Explainability (full_pipeline only)
     # ===================================================================
+    t4 = time.time()
     print(f"\n[PHASE 4] Running model explainability...")
 
     # Attach training output for explainability to access
@@ -244,17 +293,21 @@ def run_pipeline(input_data: Dict[str, Any]) -> Dict[str, Any]:
         "_training_output", {}
     )
 
-    explainability_output = explain_model(
-        model_output=model_output,
-        mitigation_result=mitigation_result,
-        config=config,
-    )
-    print(f"  Explainability analysis complete.")
+    if is_fast:
+        # Skip SHAP, skip LLM in explainability — use lightweight version
+        explainability_output = _fast_explainability(model_output, mitigation_result)
+    else:
+        explainability_output = explain_model(
+            model_output=model_output,
+            mitigation_result=mitigation_result,
+            config=config,
+        )
+    print(f"  Phase 4 time: {time.time() - t4:.2f}s")
 
     # ===================================================================
     # FINAL OUTPUT
     # ===================================================================
-    elapsed = time.time() - start_time
+    elapsed = time.time() - pipeline_start
 
     # Print summary
     detected_biases = [k for k, v in bias_tags.items() if v]
@@ -268,6 +321,7 @@ def run_pipeline(input_data: Dict[str, Any]) -> Dict[str, Any]:
   Accuracy Change:      {model_output.get('accuracy_drop', 0):+.4f}
   Fairness Improvement: {dataset_output.get('fairness_improvement', 0):.4f}
   Gemini Used:          {llm_summary.get('gemini_used', False)}
+  Speed Mode:           {speed}
   Time Elapsed:         {elapsed:.1f}s
 """)
 
@@ -297,11 +351,93 @@ def run_pipeline(input_data: Dict[str, Any]) -> Dict[str, Any]:
         elapsed=elapsed,
     )
 
-    # Save artifacts
+    # Save artifacts (async in fast mode)
     if config.get("save_artifacts", True):
-        _save_artifacts(final_output, dataset_output, config)
+        if is_fast:
+            try:
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    executor.submit(_save_artifacts, final_output, dataset_output, config)
+            except Exception:
+                pass  # Don't block on save errors
+        else:
+            _save_artifacts(final_output, dataset_output, config)
 
     return final_output
+
+
+# ---------------------------------------------------------------------------
+# Fast Explainability (lightweight, no SHAP/LLM)
+# ---------------------------------------------------------------------------
+
+def _fast_explainability(
+    model_output: Dict[str, Any],
+    mitigation_result: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Lightweight explainability without SHAP or LLM calls."""
+    from .explainability.explainer import (
+        _extract_feature_importance,
+        _build_model_comparison,
+        _analyse_predictions,
+    )
+
+    result = {
+        "feature_importance": {},
+        "model_comparison": {},
+        "predictions_analysis": {},
+        "shap_summary": None,
+        "explanation": "",
+    }
+
+    baseline_model = model_output.get("baseline_model")
+    best_model = model_output.get("best_model")
+    best_strategy = model_output.get("best_strategy", "unknown")
+
+    result["feature_importance"] = _extract_feature_importance(
+        baseline_model, best_model, mitigation_result
+    )
+    result["model_comparison"] = _build_model_comparison(model_output)
+    result["predictions_analysis"] = _analyse_predictions(model_output)
+
+    # Build rich explanation from actual metrics (no LLM needed)
+    comparison = result["model_comparison"]
+    preds = result["predictions_analysis"]
+    fi = result["feature_importance"]
+
+    baseline_m = comparison.get("baseline_metrics", {})
+    best_m = comparison.get("best_metrics", {})
+
+    bl_acc = baseline_m.get("accuracy", "N/A")
+    best_acc = best_m.get("accuracy", "N/A")
+    bl_dp = baseline_m.get("demographic_parity_diff", "N/A")
+    best_dp = best_m.get("demographic_parity_diff", "N/A")
+    changed = preds.get("predictions_changed", 0)
+    agreement = preds.get("prediction_agreement", "N/A")
+
+    top_feats = list(fi.get("best", {}).keys())[:5]
+    top_feats_str = ", ".join(top_feats) if top_feats else "N/A"
+
+    explanation_parts = [
+        f"## Strategy: {best_strategy}\n",
+        f"The **{best_strategy}** mitigation strategy was selected as the optimal "
+        f"fairness-accuracy tradeoff from {comparison.get('strategies_evaluated', 0)} "
+        f"evaluated candidates.\n",
+        f"### Performance Impact",
+        f"- **Baseline accuracy**: {bl_acc if isinstance(bl_acc, str) else f'{bl_acc:.4f}'}",
+        f"- **Post-mitigation accuracy**: {best_acc if isinstance(best_acc, str) else f'{best_acc:.4f}'}",
+        f"- **Demographic parity gap**: {bl_dp if isinstance(bl_dp, str) else f'{bl_dp:.4f}'} → {best_dp if isinstance(best_dp, str) else f'{best_dp:.4f}'}\n",
+        f"### Prediction Changes",
+        f"- **Predictions changed**: {changed}",
+        f"- **Agreement with baseline**: {agreement if isinstance(agreement, str) else f'{agreement:.1%}'}\n",
+        f"### Key Features",
+        f"The most influential features in the mitigated model are: {top_feats_str}.\n",
+        f"### Interpretation",
+        f"The mitigation adjusts how the model weighs evidence from different demographic "
+        f"groups to ensure more equitable outcomes while preserving predictive performance.",
+    ]
+
+    result["explanation"] = "\n".join(explanation_parts)
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -376,47 +512,47 @@ def _auto_detect_sensitive(
     target: str,
     config: Dict[str, Any],
 ) -> List[str]:
-    """Auto-detect sensitive features using Gemini or heuristics."""
+    """Auto-detect sensitive features using heuristics (fast) or Gemini."""
     cat_cols = df.select_dtypes(include=["object", "category"]).columns.tolist()
     cat_cols = [c for c in cat_cols if c != target]
 
+    # Always try heuristic first (instant)
+    sensitive_keywords = [
+        "sex", "gender", "race", "ethnicity", "age", "nationality",
+        "native_country", "marital", "religion",
+    ]
+
     if not cat_cols:
-        # If no categoricals, try all columns except target
         all_cols = [c for c in df.columns if c != target]
         if not all_cols:
             return []
-
-        # Use heuristic detection
-        sensitive_keywords = [
-            "sex", "gender", "race", "ethnicity", "age", "nationality",
-            "native_country", "marital", "religion",
-        ]
         detected = [
             col for col in all_cols
             if any(kw in col.lower() for kw in sensitive_keywords)
         ]
         return detected if detected else all_cols[:2]
 
-    # Try Gemini detection
-    try:
-        client = GeminiClient(config=config)
-        detected = client.detect_sensitive_features(cat_cols)
-        if detected:
-            logger.info(f"Gemini detected sensitive features: {detected}")
-            return detected
-    except Exception as e:
-        logger.warning(f"Gemini detection failed: {e}")
-
-    # Fallback: heuristic
-    sensitive_keywords = [
-        "sex", "gender", "race", "ethnicity", "age", "nationality",
-        "native_country", "marital", "religion",
-    ]
+    # Heuristic detection first
     detected = [
         col for col in cat_cols
         if any(kw in col.lower() for kw in sensitive_keywords)
     ]
-    return detected if detected else cat_cols[:2]
+
+    if detected:
+        return detected
+
+    # Only use Gemini in full mode
+    if config.get("speed") != "fast":
+        try:
+            client = GeminiClient(config=config)
+            gemini_detected = client.detect_sensitive_features(cat_cols)
+            if gemini_detected:
+                logger.info(f"Gemini detected sensitive features: {gemini_detected}")
+                return gemini_detected
+        except Exception as e:
+            logger.warning(f"Gemini detection failed: {e}")
+
+    return cat_cols[:2]
 
 
 def _strip_non_serialisable(d: Dict[str, Any]) -> Dict[str, Any]:
