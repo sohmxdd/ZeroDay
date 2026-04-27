@@ -13,7 +13,7 @@ import { MitigationTab } from "@/components/tabs/MitigationTab";
 import { ComparisonTab } from "@/components/tabs/ComparisonTab";
 import { ExplainabilityTab } from "@/components/tabs/ExplainabilityTab";
 import { MOCK_RESULT } from "@/lib/mock-data";
-import { downloadJSON, downloadPDF, downloadCSV } from "@/lib/exports";
+import { downloadJSON, downloadPDF, downloadDatasetCSV, downloadModelPKL } from "@/lib/exports";
 import { cn } from "@/lib/utils";
 import type { AegisResult } from "@/lib/types";
 
@@ -82,18 +82,12 @@ export default function ResultsPage() {
   };
 
   const handleExportDataset = () => {
-    const headers = data.dataset_analysis?.dataset_comparison?.debiased_stats?.columns || [];
-    downloadCSV(headers, [], "aegis_debiased_dataset.csv");
+    downloadDatasetCSV("aegis_debiased_dataset.csv");
     setShowExport(false);
   };
 
   const handleExportModel = () => {
-    downloadJSON({
-      strategy: data.metadata?.strategy_used,
-      model_type: data.metadata?.config?.model_type,
-      accuracy: data.model_analysis?.ranking?.ranking_table?.[0]?.accuracy,
-      exported_at: new Date().toISOString(),
-    }, "aegis_debiased_model.json");
+    downloadModelPKL("aegis_debiased_model.pkl");
     setShowExport(false);
   };
 
@@ -167,7 +161,7 @@ export default function ResultsPage() {
                     <FileText className="w-4 h-4 text-[var(--color-accent)] shrink-0" />
                     <div>
                       <p className="text-xs font-semibold">Export Bias Analysis Report</p>
-                      <p className="text-[10px] text-[var(--color-text-muted)]">Text report (.txt)</p>
+                      <p className="text-[10px] text-[var(--color-text-muted)]">Full report (.pdf)</p>
                     </div>
                   </button>
                   <button onClick={handleExportDataset} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-[var(--color-surface-hover)] transition-colors text-left">
@@ -181,7 +175,7 @@ export default function ResultsPage() {
                     <Box className="w-4 h-4 text-[var(--color-warning)] shrink-0" />
                     <div>
                       <p className="text-xs font-semibold">Download Debiased Model</p>
-                      <p className="text-[10px] text-[var(--color-text-muted)]">Model config (.json)</p>
+                      <p className="text-[10px] text-[var(--color-text-muted)]">Trained model (.pkl)</p>
                     </div>
                   </button>
                   <div className="border-t border-[var(--color-border)] my-1" />

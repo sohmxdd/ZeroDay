@@ -16,6 +16,8 @@ Usage::
 import asyncio
 import io
 import json
+import os
+import pickle
 import traceback
 from typing import Optional
 
@@ -23,7 +25,7 @@ import numpy as np
 import pandas as pd
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 
 from core import run_pipeline
 
@@ -181,6 +183,40 @@ async def api_run_pipeline(
                 "type": type(e).__name__,
             },
         )
+
+
+# ---------------------------------------------------------------------------
+# Download Debiased Dataset (CSV)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/download-dataset")
+async def download_dataset():
+    """Download the debiased dataset as CSV."""
+    csv_path = os.path.join("pipeline_output", "debiased_dataset.csv")
+    if os.path.exists(csv_path):
+        return FileResponse(
+            csv_path,
+            media_type="text/csv",
+            filename="aegis_debiased_dataset.csv",
+        )
+    return JSONResponse(status_code=404, content={"error": "No debiased dataset found. Run the pipeline first."})
+
+
+# ---------------------------------------------------------------------------
+# Download Trained Model (PKL)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/download-model")
+async def download_model():
+    """Download the best debiased model as a pickle file."""
+    pkl_path = os.path.join("pipeline_output", "best_model.pkl")
+    if os.path.exists(pkl_path):
+        return FileResponse(
+            pkl_path,
+            media_type="application/octet-stream",
+            filename="aegis_debiased_model.pkl",
+        )
+    return JSONResponse(status_code=404, content={"error": "No trained model found. Run the pipeline first."})
 
 
 # ---------------------------------------------------------------------------

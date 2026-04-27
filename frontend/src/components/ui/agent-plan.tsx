@@ -284,30 +284,30 @@ export default function Plan() {
 
   const taskVariants = {
     hidden: { opacity: 0, y: prefersReducedMotion ? 0 : -5 },
-    visible: { opacity: 1, y: 0, transition: { type: prefersReducedMotion ? "tween" : "spring", stiffness: 500, damping: 30, duration: prefersReducedMotion ? 0.2 : undefined } },
+    visible: { opacity: 1, y: 0, transition: { type: (prefersReducedMotion ? "tween" : "spring") as "tween" | "spring", stiffness: 500, damping: 30, duration: prefersReducedMotion ? 0.2 : undefined } },
     exit: { opacity: 0, y: prefersReducedMotion ? 0 : -5, transition: { duration: 0.15 } }
   };
 
   const subtaskListVariants = {
     hidden: { opacity: 0, height: 0, overflow: "hidden" as const },
-    visible: { height: "auto", opacity: 1, overflow: "visible" as const, transition: { duration: 0.25, staggerChildren: prefersReducedMotion ? 0 : 0.05, when: "beforeChildren" as const, ease: [0.2, 0.65, 0.3, 0.9] } },
-    exit: { height: 0, opacity: 0, overflow: "hidden" as const, transition: { duration: 0.2, ease: [0.2, 0.65, 0.3, 0.9] } }
+    visible: { height: "auto", opacity: 1, overflow: "visible" as const, transition: { duration: 0.25, staggerChildren: prefersReducedMotion ? 0 : 0.05, when: "beforeChildren" as const, ease: [0.2, 0.65, 0.3, 0.9] as [number, number, number, number] } },
+    exit: { height: 0, opacity: 0, overflow: "hidden" as const, transition: { duration: 0.2, ease: [0.2, 0.65, 0.3, 0.9] as [number, number, number, number] } }
   };
 
   const subtaskVariants = {
     hidden: { opacity: 0, x: prefersReducedMotion ? 0 : -10 },
-    visible: { opacity: 1, x: 0, transition: { type: prefersReducedMotion ? "tween" : "spring", stiffness: 500, damping: 25, duration: prefersReducedMotion ? 0.2 : undefined } },
+    visible: { opacity: 1, x: 0, transition: { type: (prefersReducedMotion ? "tween" : "spring") as "tween" | "spring", stiffness: 500, damping: 25, duration: prefersReducedMotion ? 0.2 : undefined } },
     exit: { opacity: 0, x: prefersReducedMotion ? 0 : -10, transition: { duration: 0.15 } }
   };
 
   const subtaskDetailsVariants = {
     hidden: { opacity: 0, height: 0, overflow: "hidden" as const },
-    visible: { opacity: 1, height: "auto", overflow: "visible" as const, transition: { duration: 0.25, ease: [0.2, 0.65, 0.3, 0.9] } }
+    visible: { opacity: 1, height: "auto", overflow: "visible" as const, transition: { duration: 0.25, ease: [0.2, 0.65, 0.3, 0.9] as [number, number, number, number] } }
   };
 
   const statusBadgeVariants = {
     initial: { scale: 1 },
-    animate: { scale: prefersReducedMotion ? 1 : [1, 1.08, 1], transition: { duration: 0.35, ease: [0.34, 1.56, 0.64, 1] } }
+    animate: { scale: prefersReducedMotion ? 1 : [1, 1.08, 1], transition: { duration: 0.35, ease: [0.34, 1.56, 0.64, 1] as [number, number, number, number] } }
   };
 
   return (

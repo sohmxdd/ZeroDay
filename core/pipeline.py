@@ -363,11 +363,11 @@ def run_pipeline(input_data: Dict[str, Any]) -> Dict[str, Any]:
         if is_fast:
             try:
                 with ThreadPoolExecutor(max_workers=1) as executor:
-                    executor.submit(_save_artifacts, final_output, dataset_output, config)
+                    executor.submit(_save_artifacts, final_output, dataset_output, model_output, config)
             except Exception:
                 pass  # Don't block on save errors
         else:
-            _save_artifacts(final_output, dataset_output, config)
+            _save_artifacts(final_output, dataset_output, model_output, config)
 
     return final_output
 
@@ -619,6 +619,7 @@ def _make_serialisable(obj: Any) -> Any:
 def _save_artifacts(
     result: Dict[str, Any],
     dataset_output: Dict[str, Any],
+    model_output: Dict[str, Any],
     config: Dict[str, Any],
 ) -> None:
     """Save pipeline artifacts to disk."""
@@ -655,3 +656,15 @@ def _save_artifacts(
             print(f"  [SAVED] Bias report -> {bias_path}")
         except Exception as e:
             logger.error(f"Failed to save bias report: {e}")
+
+    # Save best trained model as pickle
+    best_model = model_output.get("best_model") if model_output else None
+    if best_model is not None:
+        import pickle
+        pkl_path = output_dir / "best_model.pkl"
+        try:
+            with open(pkl_path, "wb") as f:
+                pickle.dump(best_model, f)
+            print(f"  [SAVED] Best model -> {pkl_path}")
+        except Exception as e:
+            logger.error(f"Failed to save model pickle: {e}")
