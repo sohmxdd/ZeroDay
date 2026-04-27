@@ -1,78 +1,154 @@
 {
   "distribution_bias": {
-    "gender": {
+    "job_title": {
       "group_proportions": {
-        "male": 0.6505,
-        "female": 0.3495
+        "4": 0.0896,
+        "3": 0.0894,
+        "7": 0.0878,
+        "0": 0.0854,
+        "10": 0.0854,
+        "11": 0.0846,
+        "2": 0.0838,
+        "8": 0.0808,
+        "1": 0.0804,
+        "6": 0.0794,
+        "9": 0.0774,
+        "5": 0.076
       },
-      "imbalance_ratio": 1.8612
+      "imbalance_ratio": 1.1789
     },
-    "race": {
+    "education_level": {
       "group_proportions": {
-        "group_A": 0.6015,
-        "group_B": 0.2565,
-        "group_C": 0.142
+        "3": 0.2032,
+        "1": 0.2022,
+        "0": 0.1998,
+        "2": 0.1998,
+        "4": 0.195
       },
-      "imbalance_ratio": 4.2359
+      "imbalance_ratio": 1.0421
     }
   },
   "outcome_bias": {
-    "gender": {
+    "job_title": {
       "outcome_rates": {
-        "female": 0.5823,
-        "male": 0.7433
+        "0": 175861.2108,
+        "1": 138184.495,
+        "2": 122101.3819,
+        "3": 152337.434,
+        "4": 149356.875,
+        "5": 120232.8211,
+        "6": 146948.2443,
+        "7": 151349.1435,
+        "8": 132949.9728,
+        "9": 160993.2894,
+        "10": 157127.8267,
+        "11": 141113.4184
       },
-      "disparity": 0.161
+      "disparity": 0.381,
+      "raw_disparity": 55628.3897,
+      "is_regression": true
     },
-    "race": {
+    "education_level": {
       "outcome_rates": {
-        "group_A": 0.7373,
-        "group_B": 0.6004,
-        "group_C": 0.6303
+        "0": 141117.0881,
+        "1": 138867.2047,
+        "2": 132589.7698,
+        "3": 154552.4656,
+        "4": 163309.5846
       },
-      "disparity": 0.1369
+      "disparity": 0.2104,
+      "raw_disparity": 30719.8148,
+      "is_regression": true
     }
   },
   "fairness_metrics": {
-    "gender": {
-      "demographic_parity_difference": 0.161,
-      "disparate_impact_ratio": 0.7834
+    "job_title": {
+      "demographic_parity_difference": 0.381,
+      "disparate_impact_ratio": 0.6837,
+      "raw_dp_diff": 55628.3897
     },
-    "race": {
-      "demographic_parity_difference": 0.1369,
-      "disparate_impact_ratio": 0.8143
+    "education_level": {
+      "demographic_parity_difference": 0.2104,
+      "disparate_impact_ratio": 0.8119,
+      "raw_dp_diff": 30719.8148
     }
   },
   "advanced_bias": {
-    "proxy_bias": {
-      "zip_code": {
-        "correlation": 0.7062,
-        "correlated_with": "race"
-      }
-    },
+    "proxy_bias": {},
     "intersectional_bias": {
       "features": [
-        "gender",
-        "race"
+        "job_title",
+        "education_level"
       ],
-      "max_disparity": 0.3227,
+      "max_disparity": 89981.2999,
       "group_rates": {
-        "female_group_A": 0.628,
-        "female_group_B": 0.533,
-        "female_group_C": 0.4737,
-        "male_group_A": 0.7964,
-        "male_group_B": 0.6375,
-        "male_group_C": 0.709
+        "0_0": 173814.4795,
+        "0_1": 168874.8144,
+        "0_2": 163182.1196,
+        "0_3": 180894.9341,
+        "0_4": 196611.2027,
+        "10_0": 153008.697,
+        "10_1": 152728.1609,
+        "10_2": 144991.2,
+        "10_3": 167806.4574,
+        "10_4": 168436.8358,
+        "11_0": 131645.4792,
+        "11_1": 133472.5974,
+        "11_2": 129256.9863,
+        "11_3": 152543.6977,
+        "11_4": 156275.8462,
+        "1_0": 137319.9211,
+        "1_1": 127577.2639,
+        "1_2": 120480.881,
+        "1_3": 149186.9479,
+        "1_4": 155215.527,
+        "2_0": 120526.2614,
+        "2_1": 115878.8554,
+        "2_2": 107401.631,
+        "2_3": 129847.7792,
+        "2_4": 136967.8966,
+        "3_0": 145481.3774,
+        "3_1": 141284.0,
+        "3_2": 136613.9474,
+        "3_3": 164632.2892,
+        "3_4": 176598.2353,
+        "4_0": 146989.3371,
+        "4_1": 139060.0549,
+        "4_2": 136159.7045,
+        "4_3": 155319.2178,
+        "4_4": 170962.8987,
+        "5_0": 113773.9429,
+        "5_1": 111109.9762,
+        "5_2": 106629.9028,
+        "5_3": 131550.3243,
+        "5_4": 137237.2625,
+        "6_0": 138329.6386,
+        "6_1": 140127.4359,
+        "6_2": 133609.7179,
+        "6_3": 153204.4125,
+        "6_4": 169862.0769,
+        "7_0": 151220.7013,
+        "7_1": 141331.5238,
+        "7_2": 138617.2,
+        "7_3": 157871.1075,
+        "7_4": 164619.57,
+        "8_0": 127515.9028,
+        "8_1": 128491.9759,
+        "8_2": 115263.1829,
+        "8_3": 138954.425,
+        "8_4": 152849.1379,
+        "9_0": 152647.2857,
+        "9_1": 156403.732,
+        "9_2": 150859.3605,
+        "9_3": 167375.5738,
+        "9_4": 181700.2192
       }
     },
     "label_bias": {}
   },
   "insights": [
-    "Representation imbalance in 'gender': ratio = 1.86",
-    "Outcome disparity in 'gender': gap = 16.10%",
-    "Representation imbalance in 'race': ratio = 4.24",
-    "Outcome disparity in 'race': gap = 13.69%",
-    "Proxy bias: 'zip_code' correlates with 'race' (r=0.706)",
-    "Intersectional bias detected across gender x race"
+    "Outcome disparity in 'job_title': relative gap = 38.10% (abs gap = 55628.39)",
+    "Outcome disparity in 'education_level': relative gap = 21.04% (abs gap = 30719.81)",
+    "Intersectional bias detected across job_title x education_level"
   ]
 }

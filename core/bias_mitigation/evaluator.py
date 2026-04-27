@@ -31,6 +31,9 @@ from sklearn.metrics import (
     f1_score,
     precision_score,
     recall_score,
+    mean_squared_error,
+    mean_absolute_error,
+    r2_score,
 )
 
 from .utils import get_logger, safe_divide
@@ -55,21 +58,15 @@ EvaluationResult = Dict[str, Any]
 # Core Metric Functions
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Classification Metrics
+# ---------------------------------------------------------------------------
+
 def compute_performance_metrics(
     y_true: np.ndarray,
     y_pred: np.ndarray,
 ) -> Dict[str, float]:
-    """
-    Compute standard classification performance metrics.
-
-    Args:
-        y_true: Ground truth labels.
-        y_pred: Predicted labels.
-
-    Returns:
-        Dict with accuracy, precision, recall, f1.
-    """
-    # Auto-detect binary vs multiclass
+    """Compute standard classification performance metrics."""
     n_classes = len(np.unique(y_true))
     avg = "binary" if n_classes <= 2 else "weighted"
 
@@ -86,25 +83,7 @@ def compute_group_metrics(
     y_pred: np.ndarray,
     sensitive: np.ndarray,
 ) -> Dict[str, Dict[str, float]]:
-    """
-    Compute per-group classification metrics.
-
-    For each group, computes:
-        - accuracy
-        - positive_rate  (predicted)
-        - true_positive_rate  (TPR / recall)
-        - false_positive_rate (FPR)
-        - false_negative_rate (FNR)
-        - count
-
-    Args:
-        y_true: Ground truth labels.
-        y_pred: Predicted labels.
-        sensitive: Group membership array.
-
-    Returns:
-        Nested dict: {group_name: {metric_name: value}}.
-    """
+    """Compute per-group classification metrics."""
     groups = np.unique(sensitive)
     result: Dict[str, Dict[str, float]] = {}
 
@@ -113,6 +92,10 @@ def compute_group_metrics(
         yt = y_true[mask]
         yp = y_pred[mask]
 
+        if len(yt) == 0:
+            result[str(group)] = {"count": 0, "accuracy": 0.0, "positive_rate": 0.0, "true_positive_rate": 0.0, "false_positive_rate": 0.0, "false_negative_rate": 0.0}
+            continue
+
         tp = float(((yt == 1) & (yp == 1)).sum())
         fp = float(((yt == 0) & (yp == 1)).sum())
         tn = float(((yt == 0) & (yp == 0)).sum())
@@ -120,7 +103,7 @@ def compute_group_metrics(
 
         result[str(group)] = {
             "count": int(mask.sum()),
-            "accuracy": float(accuracy_score(yt, yp)) if len(yt) > 0 else 0.0,
+            "accuracy": float(accuracy_score(yt, yp)),
             "positive_rate": safe_divide(float((yp == 1).sum()), float(len(yp))),
             "true_positive_rate": safe_divide(tp, tp + fn),
             "false_positive_rate": safe_divide(fp, fp + tn),
@@ -130,49 +113,95 @@ def compute_group_metrics(
     return result
 
 
+# ---------------------------------------------------------------------------
+# Regression Metrics
+# ---------------------------------------------------------------------------
+
+def compute_regression_performance_metrics(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+) -> Dict[str, float]:
+    """Compute standard regression performance metrics."""
+    return {
+        "mse": float(mean_squared_error(y_true, y_pred)),
+        "rmse": float(np.sqrt(mean_squared_error(y_true, y_pred))),
+        "mae": float(mean_absolute_error(y_true, y_pred)),
+        "r2": float(r2_score(y_true, y_pred)),
+        # Add a fake 'accuracy' for UI consistency if needed, but MSE is better
+        "accuracy": 1.0 / (1.0 + float(mean_absolute_error(y_true, y_pred))),
+    }
+
+
+def compute_regression_group_metrics(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    sensitive: np.ndarray,
+) -> Dict[str, Dict[str, float]]:
+    """Compute per-group regression metrics."""
+    groups = np.unique(sensitive)
+    result: Dict[str, Dict[str, float]] = {}
+
+    for group in groups:
+        mask = sensitive == group
+        yt = y_true[mask]
+        yp = y_pred[mask]
+
+        if len(yt) == 0:
+            result[str(group)] = {"count": 0, "mse": 0.0, "mae": 0.0, "mean_prediction": 0.0}
+            continue
+
+        result[str(group)] = {
+            "count": int(mask.sum()),
+            "mse": float(mean_squared_error(yt, yp)),
+            "mae": float(mean_absolute_error(yt, yp)),
+            "r2": float(r2_score(yt, yp)) if len(yt) > 1 else 0.0,
+            "mean_prediction": float(np.mean(yp)),
+            # For UI compatibility with classification tables
+            "positive_rate": float(np.mean(yp)), 
+            "accuracy": 1.0 / (1.0 + float(mean_absolute_error(yt, yp))),
+        }
+
+    return result
+
+
 def compute_fairness_metrics(
     y_true: np.ndarray,
     y_pred: np.ndarray,
     sensitive: np.ndarray,
+    problem_type: str = "classification",
 ) -> Dict[str, float]:
-    """
-    Compute standard fairness metrics.
+    """Compute standard fairness metrics for classification or regression."""
+    if problem_type == "regression":
+        group_metrics = compute_regression_group_metrics(y_true, y_pred, sensitive)
+        mean_preds = [gm["mean_prediction"] for gm in group_metrics.values()]
+        maes = [gm["mae"] for gm in group_metrics.values()]
+        
+        return {
+            "demographic_parity_diff": round(max(mean_preds) - min(mean_preds), 4) if mean_preds else 0.0,
+            "disparate_impact": round(safe_divide(min(mean_preds), max(mean_preds)), 4) if mean_preds else 0.0,
+            "mean_absolute_error_gap": round(max(maes) - min(maes), 4) if maes else 0.0,
+        }
+    else:
+        group_metrics = compute_group_metrics(y_true, y_pred, sensitive)
 
-    Metrics:
-        - demographic_parity_diff: max - min positive rate across groups
-        - equal_opportunity_diff: max - min TPR across groups
-        - disparate_impact: min(positive_rate) / max(positive_rate)
-        - fpr_gap: max - min FPR across groups
-        - fnr_gap: max - min FNR across groups
+        positive_rates = [gm["positive_rate"] for gm in group_metrics.values()]
+        tprs = [gm["true_positive_rate"] for gm in group_metrics.values()]
+        fprs = [gm["false_positive_rate"] for gm in group_metrics.values()]
+        fnrs = [gm["false_negative_rate"] for gm in group_metrics.values()]
 
-    Args:
-        y_true: Ground truth labels.
-        y_pred: Predicted labels.
-        sensitive: Group membership array.
+        dp_diff = max(positive_rates) - min(positive_rates) if positive_rates else 0.0
+        eo_diff = max(tprs) - min(tprs) if tprs else 0.0
+        di_ratio = safe_divide(min(positive_rates), max(positive_rates), default=0.0) if positive_rates else 0.0
+        fpr_gap = max(fprs) - min(fprs) if fprs else 0.0
+        fnr_gap = max(fnrs) - min(fnrs) if fnrs else 0.0
 
-    Returns:
-        Dict of fairness metric values.
-    """
-    group_metrics = compute_group_metrics(y_true, y_pred, sensitive)
-
-    positive_rates = [gm["positive_rate"] for gm in group_metrics.values()]
-    tprs = [gm["true_positive_rate"] for gm in group_metrics.values()]
-    fprs = [gm["false_positive_rate"] for gm in group_metrics.values()]
-    fnrs = [gm["false_negative_rate"] for gm in group_metrics.values()]
-
-    dp_diff = max(positive_rates) - min(positive_rates) if positive_rates else 0.0
-    eo_diff = max(tprs) - min(tprs) if tprs else 0.0
-    di_ratio = safe_divide(min(positive_rates), max(positive_rates), default=0.0) if positive_rates else 0.0
-    fpr_gap = max(fprs) - min(fprs) if fprs else 0.0
-    fnr_gap = max(fnrs) - min(fnrs) if fnrs else 0.0
-
-    return {
-        "demographic_parity_diff": round(dp_diff, 4),
-        "equal_opportunity_diff": round(eo_diff, 4),
-        "disparate_impact": round(di_ratio, 4),
-        "fpr_gap": round(fpr_gap, 4),
-        "fnr_gap": round(fnr_gap, 4),
-    }
+        return {
+            "demographic_parity_diff": round(dp_diff, 4),
+            "equal_opportunity_diff": round(eo_diff, 4),
+            "disparate_impact": round(di_ratio, 4),
+            "fpr_gap": round(fpr_gap, 4),
+            "fnr_gap": round(fnr_gap, 4),
+        }
 
 
 def compute_intersectional_metrics(
@@ -216,30 +245,34 @@ def evaluate_model(
     y_pred: np.ndarray,
     sensitive: np.ndarray,
     sensitive_features: Optional[Dict[str, np.ndarray]] = None,
+    problem_type: str = "classification",
 ) -> EvaluationResult:
     """
     Full evaluation of a single model.
-
-    Args:
-        y_true: Ground truth labels.
-        y_pred: Predicted labels.
-        sensitive: Primary sensitive feature array.
-        sensitive_features: Optional dict of all sensitive features
-            (for intersectional analysis).
-
-    Returns:
-        EvaluationResult with performance, fairness, group, and
-        intersectional metrics.
     """
-    performance = compute_performance_metrics(y_true, y_pred)
-    fairness = compute_fairness_metrics(y_true, y_pred, sensitive)
-    group = compute_group_metrics(y_true, y_pred, sensitive)
+    if problem_type == "regression":
+        performance = compute_regression_performance_metrics(y_true, y_pred)
+        group = compute_regression_group_metrics(y_true, y_pred, sensitive)
+    else:
+        performance = compute_performance_metrics(y_true, y_pred)
+        group = compute_group_metrics(y_true, y_pred, sensitive)
+        
+    fairness = compute_fairness_metrics(y_true, y_pred, sensitive, problem_type)
 
     intersectional = {}
     if sensitive_features and len(sensitive_features) >= 2:
-        intersectional = compute_intersectional_metrics(
-            y_true, y_pred, sensitive_features
-        )
+        if problem_type == "regression":
+            # Intersectional regression - build composite labels
+            feature_names = sorted(sensitive_features.keys())
+            composite = pd.Series([""] * len(y_true))
+            for name in feature_names:
+                vals = sensitive_features[name]
+                composite = composite + vals.astype(str) + "_"
+            intersectional = compute_regression_group_metrics(y_true, y_pred, composite.values)
+        else:
+            intersectional = compute_intersectional_metrics(
+                y_true, y_pred, sensitive_features
+            )
 
     return {
         "performance": performance,
@@ -272,6 +305,7 @@ def evaluate_all_models(
             y_true = np.asarray(trained["y_test"])
             y_pred = np.asarray(trained["predictions"])
             sensitive = np.asarray(trained["sensitive_test"])
+            problem_type = trained.get("problem_type", "classification")
 
             # Build per-feature sensitive arrays for intersectional analysis
             feat_dict = None
@@ -283,19 +317,22 @@ def evaluate_all_models(
                     if isinstance(feat_arr, pd.Series):
                         try:
                             feat_dict[feat_name] = feat_arr.loc[test_idx].values
-                        except KeyError:
+                        except (KeyError, ValueError):
+                            # Fallback if indices don't match exactly
                             feat_dict[feat_name] = np.asarray(feat_arr)[:len(y_true)]
                     else:
                         feat_dict[feat_name] = np.asarray(feat_arr)[:len(y_true)]
 
-            evaluation = evaluate_model(y_true, y_pred, sensitive, feat_dict)
+            evaluation = evaluate_model(y_true, y_pred, sensitive, feat_dict, problem_type)
             results[pipeline_name] = evaluation
 
+            acc_or_mse = evaluation['performance'].get('accuracy', 0) if problem_type == 'classification' else evaluation['performance'].get('mse', 0)
+            metric_label = "acc" if problem_type == 'classification' else "mse"
+            
             logger.info(
                 f"  [{pipeline_name}] "
-                f"acc={evaluation['performance']['accuracy']:.4f}  "
-                f"dp_diff={evaluation['fairness']['demographic_parity_diff']:.4f}  "
-                f"di={evaluation['fairness']['disparate_impact']:.4f}"
+                f"{metric_label}={acc_or_mse:.4f}  "
+                f"dp_diff={evaluation['fairness'].get('demographic_parity_diff', 0):.4f}  "
             )
 
         except Exception as e:

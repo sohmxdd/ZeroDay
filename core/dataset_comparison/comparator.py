@@ -95,6 +95,12 @@ def compare_datasets(
     # Summary
     result["summary"] = _generate_summary(result, sensitive_features)
 
+    # Added: sample of debiased data for UI export (limited to 500 rows to avoid JSON bloat)
+    # We explicitly convert values to JSON-safe primitives
+    sample_size = min(500, len(debiased_dataset))
+    sample_df = debiased_dataset.head(sample_size).replace({np.nan: None, np.inf: None, -np.inf: None})
+    result["sample_data"] = sample_df.values.tolist()
+
     logger.info("Dataset comparison complete.")
     return result
 

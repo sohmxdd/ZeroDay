@@ -43,26 +43,6 @@ def explain_model(
 ) -> Dict[str, Any]:
     """
     Generate model explainability analysis.
-
-    Args:
-        model_output: Output from the mitigation engine containing:
-            - baseline_model
-            - best_model
-            - baseline_predictions
-            - best_predictions
-            - comparison_table
-            - metrics_before_after
-            - best_strategy
-        mitigation_result: Full mitigation engine result.
-        config: Optional configuration overrides.
-
-    Returns:
-        Explainability report dict with:
-            - feature_importance
-            - model_comparison
-            - predictions_analysis
-            - shap_summary (if available)
-            - explanation (LLM-generated)
     """
     logger.info("Running model explainability analysis (Phase 4)...")
 
@@ -79,6 +59,11 @@ def explain_model(
     best_model = model_output.get("best_model")
     best_strategy = model_output.get("best_strategy", "unknown")
 
+    # Detect problem type
+    training_output = mitigation_result.get("_training_output", {})
+    baseline_trained = training_output.get("baseline", {})
+    problem_type = baseline_trained.get("problem_type", "classification")
+
     # --- Feature Importance ---
     result["feature_importance"] = _extract_feature_importance(
         baseline_model, best_model, mitigation_result
@@ -88,17 +73,17 @@ def explain_model(
     result["model_comparison"] = _build_model_comparison(model_output)
 
     # --- Predictions Analysis ---
-    result["predictions_analysis"] = _analyse_predictions(model_output)
+    result["predictions_analysis"] = _analyse_predictions(model_output, problem_type)
 
     # --- SHAP (Optional) ---
     result["shap_summary"] = _compute_shap(best_model, mitigation_result)
 
     # --- LLM Explanation ---
     result["explanation"] = _generate_explainability_text(
-        result, best_strategy, cfg
+        result, best_strategy, problem_type, cfg
     )
 
-    logger.info("Model explainability analysis complete.")
+    logger.info(f"Model explainability analysis complete (Type: {problem_type}).")
     return result
 
 
@@ -215,7 +200,7 @@ def _build_model_comparison(model_output: Dict[str, Any]) -> Dict[str, Any]:
 # Predictions Analysis
 # ---------------------------------------------------------------------------
 
-def _analyse_predictions(model_output: Dict[str, Any]) -> Dict[str, Any]:
+def _analyse_predictions(model_output: Dict[str, Any], problem_type: str = "classification") -> Dict[str, Any]:
     """Analyse prediction distributions."""
     baseline_preds = model_output.get("baseline_predictions")
     best_preds = model_output.get("best_predictions")
@@ -224,32 +209,53 @@ def _analyse_predictions(model_output: Dict[str, Any]) -> Dict[str, Any]:
 
     if baseline_preds is not None:
         baseline_arr = np.asarray(baseline_preds)
-        analysis["baseline"] = {
-            "total": len(baseline_arr),
-            "positive_count": int((baseline_arr == 1).sum()),
-            "negative_count": int((baseline_arr == 0).sum()),
-            "positive_rate": round(float((baseline_arr == 1).mean()), 4),
-        }
+        if problem_type == "classification":
+            analysis["baseline"] = {
+                "total": len(baseline_arr),
+                "positive_count": int((baseline_arr == 1).sum()),
+                "negative_count": int((baseline_arr == 0).sum()),
+                "positive_rate": round(float((baseline_arr == 1).mean()), 4),
+            }
+        else:
+            analysis["baseline"] = {
+                "total": len(baseline_arr),
+                "mean": round(float(np.mean(baseline_arr)), 4),
+                "std": round(float(np.std(baseline_arr)), 4),
+                "min": round(float(np.min(baseline_arr)), 4),
+                "max": round(float(np.max(baseline_arr)), 4),
+            }
 
     if best_preds is not None:
         best_arr = np.asarray(best_preds)
-        analysis["best"] = {
-            "total": len(best_arr),
-            "positive_count": int((best_arr == 1).sum()),
-            "negative_count": int((best_arr == 0).sum()),
-            "positive_rate": round(float((best_arr == 1).mean()), 4),
-        }
+        if problem_type == "classification":
+            analysis["best"] = {
+                "total": len(best_arr),
+                "positive_count": int((best_arr == 1).sum()),
+                "negative_count": int((best_arr == 0).sum()),
+                "positive_rate": round(float((best_arr == 1).mean()), 4),
+            }
+        else:
+            analysis["best"] = {
+                "total": len(best_arr),
+                "mean": round(float(np.mean(best_arr)), 4),
+                "std": round(float(np.std(best_arr)), 4),
+                "min": round(float(np.min(best_arr)), 4),
+                "max": round(float(np.max(best_arr)), 4),
+            }
 
     if baseline_preds is not None and best_preds is not None:
         baseline_arr = np.asarray(baseline_preds)
         best_arr = np.asarray(best_preds)
         min_len = min(len(baseline_arr), len(best_arr))
         if min_len > 0:
-            agreement = float((baseline_arr[:min_len] == best_arr[:min_len]).mean())
-            analysis["prediction_agreement"] = round(agreement, 4)
-            analysis["predictions_changed"] = int(
-                (baseline_arr[:min_len] != best_arr[:min_len]).sum()
-            )
+            if problem_type == "classification":
+                agreement = float((baseline_arr[:min_len] == best_arr[:min_len]).mean())
+                analysis["prediction_agreement"] = round(agreement, 4)
+                analysis["predictions_changed"] = int((baseline_arr[:min_len] != best_arr[:min_len]).sum())
+            else:
+                correlation = float(np.corrcoef(baseline_arr[:min_len], best_arr[:min_len])[0, 1])
+                analysis["prediction_correlation"] = round(correlation, 4)
+                analysis["mean_shift"] = round(float(np.mean(best_arr[:min_len]) - np.mean(baseline_arr[:min_len])), 4)
 
     return analysis
 
@@ -337,6 +343,7 @@ def _compute_shap(
 def _generate_explainability_text(
     result: Dict[str, Any],
     best_strategy: str,
+    problem_type: str,
     config: Dict[str, Any],
 ) -> str:
     """Generate a text explanation of model behaviour."""
@@ -347,33 +354,26 @@ def _generate_explainability_text(
     top_features = list(fi.keys())[:5] if fi else []
 
     preds = result.get("predictions_analysis", {})
-    agreement = preds.get("prediction_agreement", "N/A")
-    changed = preds.get("predictions_changed", "N/A")
+    agreement = preds.get("prediction_agreement", preds.get("prediction_correlation", "N/A"))
 
     comparison = result.get("model_comparison", {})
     baseline_metrics = comparison.get("baseline_metrics", {})
     best_metrics = comparison.get("best_metrics", {})
 
-    context = {
-        "best_strategy": best_strategy,
-        "top_features": top_features,
-        "prediction_agreement": agreement,
-        "predictions_changed": changed,
-        "baseline_accuracy": baseline_metrics.get("accuracy", "N/A"),
-        "best_accuracy": best_metrics.get("accuracy", "N/A"),
-    }
-
     client = GeminiClient(config=config)
+
+    metrics_str = f"Baseline Accuracy: {baseline_metrics.get('accuracy', 'N/A')}, New Accuracy: {best_metrics.get('accuracy', 'N/A')}"
+    if problem_type == "regression":
+        metrics_str = f"Baseline MSE: {baseline_metrics.get('mse', 'N/A')}, New MSE: {best_metrics.get('mse', 'N/A')}"
 
     prompt = f"""You are an AI explainability expert. Provide a brief explanation of
 how the bias mitigation affected the model's behavior:
 
+- Problem type: {problem_type}
 - Strategy used: {best_strategy}
 - Top important features: {top_features}
-- Prediction agreement with baseline: {agreement}
-- Predictions changed: {changed}
-- Baseline accuracy: {baseline_metrics.get('accuracy', 'N/A')}
-- Best model accuracy: {best_metrics.get('accuracy', 'N/A')}
+- Prediction similarity (agreement/correlation) with baseline: {agreement}
+- {metrics_str}
 
 Explain in 2-3 sentences what changed and why. Be concise.
 """

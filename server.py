@@ -16,6 +16,7 @@ Usage::
 import asyncio
 import io
 import json
+import os
 import traceback
 from typing import Optional
 
@@ -24,8 +25,11 @@ import pandas as pd
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from core import run_pipeline
+
+from core.config import OUTPUT_DIR
 
 # ---------------------------------------------------------------------------
 # App
@@ -37,14 +41,23 @@ app = FastAPI(
     version="1.0.0",
 )
 
+# Ensure output directory exists for static mounting
+os.makedirs(str(OUTPUT_DIR), exist_ok=True)
+
 # CORS — allow frontend dev server
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3001", "http://127.0.0.1:3000", "http://127.0.0.1:3001"],
+    allow_origins=["*"], # More permissive for dev
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Serve static files and exports
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+os.makedirs(static_dir, exist_ok=True)
+app.mount("/static", StaticFiles(directory=static_dir), name="static")
+app.mount("/api/exports", StaticFiles(directory=str(OUTPUT_DIR)), name="exports")
 
 
 # ---------------------------------------------------------------------------

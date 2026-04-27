@@ -193,3 +193,14 @@ def get_improvement_summary(
         "fairness_improvement": round(fairness_improvement, 4),
         "score_improvement": round(best["score"] - baseline["score"], 4),
     }
+
+    return {
+        "best_strategy": best["pipeline"],
+        "baseline_accuracy": baseline["accuracy"],
+        "best_accuracy": best["accuracy"],
+        "accuracy_drop": round(accuracy_drop, 4),
+        "baseline_unfairness": baseline["unfairness"],
+        "best_unfairness": best["unfairness"],
+        "fairness_improvement": round(fairness_improvement, 4),
+        "score_improvement": round(best["score"] - baseline["score"], 4),
+    }

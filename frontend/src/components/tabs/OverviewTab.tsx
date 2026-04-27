@@ -15,10 +15,10 @@ export function OverviewTab({ data }: { data: AegisResult }) {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <MetricCard title="Model Accuracy" value={formatPercent(ranking.ranking_table[0]?.accuracy || 0)} subtitle="Best performing model" icon={Target} trend="up" trendValue="+4.85%" variant="accent" />
-        <MetricCard title="Fairness Score" value={ranking.ranking_table[0]?.demographic_parity_diff.toFixed(4) || "N/A"} subtitle="Demographic Parity Diff" icon={Scale} trend="down" trendValue="0.0000" variant="success" />
-        <MetricCard title="Bias Detected" value={`${biasCount} types`} subtitle={`${bias_report.insights.length} total insights`} icon={AlertTriangle} variant="warning" />
-        <MetricCard title="Optimal Strategy" value="Resampling" subtitle={`Tradeoff: ${ranking.best_score.toFixed(4)}`} icon={Sparkles} variant="default" />
+        <MetricCard title="Model Accuracy" value={formatPercent(ranking?.ranking_table?.[0]?.accuracy || 0)} subtitle="Best performing model" icon={Target} trend="up" trendValue="+4.85%" variant="accent" />
+        <MetricCard title="Fairness Score" value={ranking?.ranking_table?.[0] ? ranking.ranking_table[0].demographic_parity_diff.toFixed(4) : "N/A"} subtitle="Demographic Parity Diff" icon={Scale} trend="down" trendValue="0.0000" variant="success" />
+        <MetricCard title="Bias Detected" value={`${biasCount} types`} subtitle={`${bias_report?.insights?.length || 0} total insights`} icon={AlertTriangle} variant="warning" />
+        <MetricCard title="Optimal Strategy" value={ranking?.best_strategy || "None"} subtitle={`Tradeoff: ${ranking?.best_score?.toFixed(4) || "0.0000"}`} icon={Sparkles} variant="default" />
       </div>
 
       <SectionCard title="AI-Generated Executive Summary" icon={Lightbulb} badge={data.explanations.gemini_used ? "Gemini" : "Template"} badgeVariant="success">

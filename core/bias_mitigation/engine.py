@@ -344,6 +344,7 @@ class BiasMitigationEngine:
         # Debiased dataset
         debiased_X = best_mitigation.get("X", X)
         debiased_y = best_mitigation.get("y", y)
+        debiased_s = best_mitigation.get("sensitive") # This is primary_s but resampled
 
         # Reconstruct debiased DataFrame
         debiased_df = debiased_X.copy().reset_index(drop=True)
@@ -355,13 +356,16 @@ class BiasMitigationEngine:
             # Target length differs from X -- truncate/extend to match X
             debiased_df[target] = np.resize(debiased_y_vals, len(debiased_df))
 
-        # Add sensitive features back if they're missing
+        # Add sensitive features back
+        if debiased_s is not None and len(debiased_s) == len(debiased_df):
+            debiased_df[primary_sensitive] = debiased_s.values
+            
         for feat in sensitive_features:
             if feat not in debiased_df.columns:
                 if len(debiased_df) == len(S):
                     debiased_df[feat] = S[feat].values
-                # If size changed (resampling), sensitive cols are unavailable
-                # -- leave them out; after-metrics will use best_eval instead
+                # Note: if size changed and not primary_s, we might still miss some
+                # but primary is now guaranteed if resampling works.
                     
         # Compute "after" metrics from evaluation results when available
         after_y = debiased_df[target] if target in debiased_df.columns else y

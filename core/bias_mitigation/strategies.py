@@ -46,6 +46,7 @@ MitigationResult = Dict[str, Any]
 # Common keys:
 #   "X"             : transformed feature matrix (pd.DataFrame)
 #   "y"             : target vector (pd.Series)
+#   "sensitive"     : transformed sensitive feature series (pd.Series)
 #   "sample_weight" : per-sample weights (np.ndarray or None)
 #   "model"         : a pre-fitted model (for post-processing strategies)
 #   "thresholds"    : group-specific thresholds dict
@@ -113,6 +114,7 @@ def apply_reweighting(
     return {
         "X": X.copy(),
         "y": y.copy(),
+        "sensitive": sensitive.copy(),
         "sample_weight": weights,
         "model": None,
         "thresholds": None,
@@ -185,7 +187,7 @@ def apply_resampling(
     result_df = result_df.sample(frac=1.0, random_state=rng).reset_index(drop=True)
 
     y_out = result_df.pop("__target__")
-    result_df.pop("__group__")
+    s_out = result_df.pop("__group__")
 
     logger.info(
         f"Resampling complete -- {len(X)} -> {len(result_df)} samples"
@@ -193,7 +195,8 @@ def apply_resampling(
 
     return {
         "X": result_df,
-        "y": y_out,
+        "y": pd.Series(y_out, name=y.name),
+        "sensitive": pd.Series(s_out, name=sensitive.name),
         "sample_weight": None,
         "model": None,
         "thresholds": None,
@@ -234,12 +237,22 @@ def apply_smote(
     logger.info("Applying SMOTE ...")
     cfg = get_config(config)
 
-    # Encode categoricals for SMOTE
-    X_numeric = X.copy()
+    # To ensure sensitive features are resampled alongside X and y,
+    # we temporarily include them in X if they aren't already there.
+    X_smote = X.copy()
+    temp_sens_col = "__temp_sensitive__"
+    
+    # We need to encode sensitive for SMOTE if it's categorical
+    s_le = LabelEncoder()
+    s_encoded = s_le.fit_transform(sensitive.astype(str))
+    X_smote[temp_sens_col] = s_encoded
+
+    # Encode other categoricals in X
     label_encoders: Dict[str, LabelEncoder] = {}
-    for col in X_numeric.select_dtypes(include=["object", "category"]).columns:
+    for col in X_smote.select_dtypes(include=["object", "category"]).columns:
+        if col == temp_sens_col: continue
         le = LabelEncoder()
-        X_numeric[col] = le.fit_transform(X_numeric[col].astype(str))
+        X_smote[col] = le.fit_transform(X_smote[col].astype(str))
         label_encoders[col] = le
 
     imblearn = safe_import("imblearn.over_sampling")
@@ -250,9 +263,16 @@ def apply_smote(
                 k_neighbors=min(cfg["smote_k_neighbors"], len(y) - 1),
                 random_state=cfg["random_state"],
             )
-            X_res, y_res = smote.fit_resample(X_numeric, y)
-            X_res = pd.DataFrame(X_res, columns=X_numeric.columns)
+            X_res, y_res = smote.fit_resample(X_smote, y)
+            X_res = pd.DataFrame(X_res, columns=X_smote.columns)
             y_res = pd.Series(y_res, name=y.name)
+
+            # Extract resampled sensitive features
+            s_res_encoded = X_res.pop(temp_sens_col).round().astype(int)
+            # Clip to valid range just in case of interpolation artifacts
+            s_max = len(s_le.classes_) - 1
+            s_res_encoded = np.clip(s_res_encoded, 0, s_max)
+            s_res = pd.Series(s_le.inverse_transform(s_res_encoded), name=sensitive.name)
 
             logger.info(
                 f"SMOTE (imbalanced-learn) complete -- {len(X)} -> {len(X_res)} samples"
@@ -260,6 +280,7 @@ def apply_smote(
             return {
                 "X": X_res,
                 "y": y_res,
+                "sensitive": s_res,
                 "sample_weight": None,
                 "model": None,
                 "thresholds": None,
@@ -355,6 +376,7 @@ def _dir_aif360(
     return {
         "X": X_out.reset_index(drop=True),
         "y": pd.Series(y_out.values, name=y.name).reset_index(drop=True),
+        "sensitive": sensitive.copy().reset_index(drop=True),
         "sample_weight": None,
         "model": None,
         "thresholds": None,
@@ -414,6 +436,7 @@ def _dir_quantile_repair(
     return {
         "X": X_repaired.reset_index(drop=True),
         "y": y.copy().reset_index(drop=True),
+        "sensitive": sensitive.copy().reset_index(drop=True),
         "sample_weight": None,
         "model": None,
         "thresholds": None,
@@ -502,6 +525,7 @@ def apply_threshold_optimization(
     return {
         "X": X.copy(),
         "y": y.copy(),
+        "sensitive": sensitive.copy(),
         "sample_weight": None,
         "model": estimator,
         "thresholds": thresholds,
@@ -577,6 +601,7 @@ def apply_fairlearn_reduction(
             return {
                 "X": X.copy(),
                 "y": y.copy(),
+                "sensitive": sensitive.copy(),
                 "sample_weight": None,
                 "model": mitigator,
                 "thresholds": None,
@@ -651,6 +676,7 @@ def execute_strategy(
 
     current_X = X.copy()
     current_y = y.copy()
+    current_sensitive = sensitive.copy()
     current_weight = None
     current_model = None
     current_thresholds = None
@@ -671,9 +697,10 @@ def execute_strategy(
                 f"Available: {list(STRATEGY_FUNCTIONS.keys())}"
             )
 
-        result = func(current_X, current_y, sensitive, config=config, **kwargs)
+        result = func(current_X, current_y, current_sensitive, config=config, **kwargs)
         current_X = result["X"]
         current_y = result["y"]
+        current_sensitive = result["sensitive"]
 
         if result.get("sample_weight") is not None:
             current_weight = result["sample_weight"]
@@ -687,6 +714,7 @@ def execute_strategy(
     return {
         "X": current_X,
         "y": current_y,
+        "sensitive": current_sensitive,
         "sample_weight": current_weight,
         "model": current_model,
         "thresholds": current_thresholds,

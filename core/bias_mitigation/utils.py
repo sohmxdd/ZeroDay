@@ -236,20 +236,24 @@ def compute_group_outcome_rates(
     positive_label: Any = 1,
 ) -> Dict[str, float]:
     """
-    Compute the positive outcome rate for each group.
-
-    Args:
-        group_series: Series of group labels.
-        target_series: Series of target values.
-        positive_label: The value considered as positive outcome.
-
-    Returns:
-        Dict mapping each group to its positive outcome rate.
+    Compute the outcome rate (classification) or mean outcome (regression) for each group.
     """
     combined = pd.DataFrame({"group": group_series, "target": target_series})
-    rates = combined.groupby("group")["target"].apply(
-        lambda x: (x == positive_label).mean()
-    )
+    
+    # Check if regression (numeric and many unique values)
+    is_regression = False
+    if pd.api.types.is_numeric_dtype(target_series):
+        unique_vals = len(np.unique(target_series.dropna()))
+        if unique_vals > 20 or unique_vals / len(target_series.dropna()) > 0.05:
+            is_regression = True
+
+    if is_regression:
+        rates = combined.groupby("group")["target"].mean()
+    else:
+        rates = combined.groupby("group")["target"].apply(
+            lambda x: (x == positive_label).mean()
+        )
+        
     return {str(k): float(v) for k, v in rates.items()}
 
 
